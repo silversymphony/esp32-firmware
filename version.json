@@ -1,5 +1,5 @@
 {
-  "version": "1.0.2",
+  "version": "1.0.5",
   "url": "https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/esp32-firmware.bin",
-  "changelog": "Bản phát hành v1.0.1: Tối ưu bộ nhớ với NimBLE-Arduino (giảm ~350KB Flash), bỏ Wi-Fi nguồn mặc định, thiết bị mới tự động bật Captive Portal để chọn Wi-Fi."
+  "changelog": "Bản phát hành v1.0.5: Sửa dứt điểm lỗi tự bật Captive Portal khi đã có Internet; Hiển thị mật khẩu nguồn và mật khẩu AP trên Web Portal; Tự động chọn pool IP ngẫu nhiên trong dải 10.51.28.50 -> 10.51.31.100 (khắc phục giới hạn DHCPS_MAX_LEASE của ESP-IDF); Cung cấp DNS 8.8.8.8 qua DHCP."
 }

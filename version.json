@@ -1,5 +1,5 @@
 {
-  "version": "1.0.5",
+  "version": "1.0.8",
   "url": "https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/esp32-firmware.bin",
-  "changelog": "Bản phát hành v1.0.5: Sửa dứt điểm lỗi tự bật Captive Portal khi đã có Internet; Hiển thị mật khẩu nguồn và mật khẩu AP trên Web Portal; Tự động chọn pool IP ngẫu nhiên trong dải 10.51.28.50 -> 10.51.31.100 (khắc phục giới hạn DHCPS_MAX_LEASE của ESP-IDF); Cung cấp DNS 8.8.8.8 qua DHCP."
+  "changelog": "Bản phát hành v1.0.8: Khắc phục triệt để lỗi bộ chọn ngôn ngữ Tiếng Anh / Tiếng Việt hoạt động mượt mà tức thì kèm hiệu ứng Toast phản hồi; Điều chỉnh dải IP DHCP ngẫu nhiên mặc định thành 10.51.28.10 - 10.51.28.200; Bổ sung tính năng 1-Click sao chép toàn bộ cấu hình Wi-Fi nguồn (STA) thành Preset mạng phát SoftAP (bao gồm SSID, BSSID/MAC, Gateway, Subnet và dải DHCP theo subnet nguồn); Đồng bộ lệnh CLI Terminal 'PROFILE:CLONE'."
 }

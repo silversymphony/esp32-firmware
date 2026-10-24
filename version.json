@@ -1,5 +1,5 @@
 {
-  "version": "1.2.0",
-  "url": "https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/esp32-firmware.bin",
-  "changelog": "Bản phát hành v1.2.0: Bổ sung tùy chọn Bật/Tắt Wi-Fi nguồn (STA). Khi tắt, ESP32 chuyển sang chế độ Mạng nội bộ Offline (Local LAN), tự động ngắt Option 3 (Default Gateway) và Option 6 (DNS) trên DHCP Server, cho phép điện thoại kết nối vào Wi-Fi SoftAP vẫn giữ nguyên mạng 5G Cellular để lướt Web/App mà không bị gián đoạn."
+  "version": "1.3.2",
+  "url": "https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/esp32_v1.3.2.ino.bin",
+  "changelog": "Bản phát hành v1.3.2: Sửa lỗi Captive DNS khi tắt Wi-Fi nguồn; hiển thị trạng thái 'ĐÃ TẮT (DÙNG 5G)' chuẩn xác; loại bỏ nút clone trùng lặp ở Status; bỏ quét Wi-Fi ngầm khi khởi động và khi đã kết nối/tắt STA giúp Wi-Fi AP mượt mà không bị nghẽn; thêm cơ chế backoff 15s cho Cloud Sync chống nghẽn CPU."
 }

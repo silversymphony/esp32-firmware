@@ -56,6 +56,7 @@ extern "C" {
 #include <lwip/tcpip.h>
 #include <WiFiUdp.h>
 #include <Update.h>
+#include <ESPmDNS.h>
 
 // Nhúng thư viện nâng cấp Firmware không dây qua GitHub HTTPS (OTA)
 #include <WiFiClientSecure.h>
@@ -160,14 +161,6 @@ bool should_reboot = false;
 unsigned long reboot_time = 0;
 unsigned long last_sta_check = 0;
 volatile bool dhcp_reconfigure_needed = false;
-
-// Quản lý kết nối từ xa qua Internet (Cloud Remote Access)
-bool cloud_enabled = false;
-String cloud_url = "";
-String cloud_key = "070213";
-bool cloud_online = false;
-unsigned long last_cloud_sync = 0;
-void syncWithCloudServer();
 
 // =========================================================================
 //      BLUETOOTH LOW ENERGY (BLE) - NORDIC UART SERVICE (CONSOLE & CONFIG)
@@ -364,11 +357,7 @@ void handleBleCommand(String cmd) {
     h += "• OTAURL:url        -> Cai dat duong dan version.json\n";
     h += "• OTA               -> Kiem tra ban cap nhat moi tu GitHub\n";
     h += "• OTA:RUN           -> Tai va ghi Flash ban moi tu GitHub\n";
-    h += "\n-- [5. Quan Ly Tu Xa Cloud] --\n";
-    h += "• CLOUD:ON | OFF    -> Bat/Tat quan ly tu xa qua Internet\n";
-    h += "• CLOUD:CONFIG:url,key -> Cai dat Cloudflare Worker URL & Key\n";
-    h += "• CLOUD:STATUS      -> Xem trang thai ket noi Cloud Remote\n";
-    h += "\n-- [6. He Thong] --\n";
+    h += "\n-- [5. He Thong & Truy Cap Truc Tiep] --\n";
     h += "• STATUS            -> Xem toan bo trang thai he thong & IP\n";
     h += "• CLEARLOGS         -> Xoa bo nho dem nhat ky (log buffer)\n";
     h += "• REBOOT            -> Khoi dong lai ESP32";
@@ -408,6 +397,11 @@ void handleBleCommand(String cmd) {
     st += "BLE PIN: " + String(pinStr) + " | Radio: " + (ble_enabled ? "BAT" : "TAT") + "\n";
     st += "OTA URL: " + ota_version_url + "\n";
     st += "NAT Routing: " + String(napt_enabled ? "ON" : "OFF") + "\n";
+    st += "Truy cap SoftAP: http://" + ap_ip_str + "/\n";
+    if (WiFi.status() == WL_CONNECTED) {
+      st += "Truy cap LAN: http://" + WiFi.localIP().toString() + "/\n";
+    }
+    st += "Truy cap mDNS: http://esp32.local/\n";
     st += "RAM Free: " + String(ESP.getFreeHeap() / 1024) + " KB\n";
     st += "Flash Chip: " + String(ESP.getFlashChipSize() / (1024 * 1024)) + " MB\n";
     st += "Uptime: " + String(millis() / 1000) + "s";
@@ -482,6 +476,8 @@ void handleBleCommand(String cmd) {
     disableNapt();
     stopCaptiveDns();
     configureSoftApDhcp();
+    delay(50);
+    esp_wifi_deauth_sta(0);
     sendResponse("[OK] Da TAT Wi-Fi nguon! ESP32 chuyen sang che do MANG NOI BO OFFLINE. Dien thoai ket noi vao se giu nguyen 5G de truy cap Internet.");
     return;
   }
@@ -888,57 +884,7 @@ void handleBleCommand(String cmd) {
     return;
   }
 
-  // 17. CLOUD: Quản lý từ xa qua Internet (Cloud Remote)
-  if (cmd.equalsIgnoreCase("CLOUD:ON") || cmd.equalsIgnoreCase("cloud:on")) {
-    cloud_enabled = true;
-    prefs.begin("gateway", false);
-    prefs.putBool("cloud_en", true);
-    prefs.end();
-    sendResponse("[OK] Da BAT quan ly tu xa qua Internet. ESP32 se dong bo toi: " + (cloud_url.length() > 0 ? cloud_url : "(Chua cau hinh URL)"));
-    return;
-  }
-
-  if (cmd.equalsIgnoreCase("CLOUD:OFF") || cmd.equalsIgnoreCase("cloud:off")) {
-    cloud_enabled = false;
-    cloud_online = false;
-    prefs.begin("gateway", false);
-    prefs.putBool("cloud_en", false);
-    prefs.end();
-    sendResponse("[OK] Da TAT quan ly tu xa qua Internet.");
-    return;
-  }
-
-  if (cmd.startsWith("CLOUD:CONFIG:") || cmd.startsWith("cloud:config:")) {
-    String payload = cmd.substring(13); payload.trim();
-    int comma = payload.indexOf(',');
-    if (comma >= 0) {
-      cloud_url = payload.substring(0, comma);
-      cloud_key = payload.substring(comma + 1);
-      cloud_url.trim(); cloud_key.trim();
-      cloud_enabled = true;
-      prefs.begin("gateway", false);
-      prefs.putBool("cloud_en", true);
-      prefs.putString("cloud_url", cloud_url);
-      prefs.putString("cloud_key", cloud_key);
-      prefs.end();
-      sendResponse("[OK] Da luu Cloud URL='" + cloud_url + "' & Key='" + cloud_key + "'. Da BAT ket noi Cloud!");
-    } else {
-      sendResponse("[ERROR] Cu phap sai! Hay dung: CLOUD:CONFIG:https://my-worker.workers.dev,SecretKey");
-    }
-    return;
-  }
-
-  if (cmd.equalsIgnoreCase("CLOUD:STATUS") || cmd.equalsIgnoreCase("cloud:status")) {
-    String s = "=== TRANG THAI CLOUD REMOTE ===\n";
-    s += "Enabled: " + String(cloud_enabled ? "BAT" : "TAT") + "\n";
-    s += "Status: " + String(cloud_online ? "ONLINE (Ket noi on dinh)" : "OFFLINE") + "\n";
-    s += "URL: " + (cloud_url.length() > 0 ? cloud_url : "(Chua cau hinh)") + "\n";
-    s += "Key: " + cloud_key;
-    sendResponse(s);
-    return;
-  }
-
-  // 18. REBOOT: Khởi động lại thiết bị
+  // 17. REBOOT: Khởi động lại thiết bị
   if (cmd.equalsIgnoreCase("REBOOT") || cmd.equalsIgnoreCase("reboot")) {
     sendResponse("[OK] ESP32 se khoi dong lai sau 1 giay...");
     delay(500);
@@ -1464,133 +1410,6 @@ void performGithubOta(const String &binUrl) {
   http.end();
 }
 
-// Đồng bộ hai chiều với Cloudflare Worker qua HTTPS (Gửi trạng thái & nhận lệnh từ xa)
-static unsigned long cloud_sync_interval = 5000;
-
-void syncWithCloudServer() {
-  if (!cloud_enabled || cloud_url.length() < 8 || WiFi.status() != WL_CONNECTED) {
-    cloud_online = false;
-    return;
-  }
-
-  // Giới hạn tần suất đồng bộ; khi gặp lỗi tự động giãn cách 45s để không nghẽn Wi-Fi AP & CPU
-  if (millis() - last_cloud_sync < cloud_sync_interval) {
-    return;
-  }
-  last_cloud_sync = millis();
-
-  // BẢO VỆ PHẦN CỨNG: Nếu RAM còn dưới 45KB, mbedTLS sẽ ngốn hết RAM làm văng Wi-Fi AP -> Tự động bỏ qua
-  if (ESP.getFreeHeap() < 45000) {
-    cloud_online = false;
-    cloud_sync_interval = 30000;
-    return;
-  }
-
-  WiFiClientSecure client;
-  client.setInsecure();
-  client.setTimeout(2);
-  #if !defined(ESP_ARDUINO_VERSION_MAJOR) || (ESP_ARDUINO_VERSION_MAJOR < 3)
-  client.setBufferSizes(2048, 512);
-  #endif
-
-  HTTPClient http;
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setTimeout(2500);
-
-  String syncUrl = cloud_url;
-  if (!syncUrl.endsWith("/")) syncUrl += "/";
-  syncUrl += "api/sync";
-
-  if (!http.begin(client, syncUrl)) {
-    cloud_online = false;
-    cloud_sync_interval = 45000;
-    client.stop();
-    return;
-  }
-
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("X-ESP32-Key", cloud_key);
-
-  bool connected = (sta_enabled && WiFi.status() == WL_CONNECTED);
-  String safe_sta_pass = sta_password;
-  safe_sta_pass.replace("\\", "\\\\");
-  safe_sta_pass.replace("\"", "\\\"");
-
-  char pinBuf[10];
-  snprintf(pinBuf, sizeof(pinBuf), "%06u", ble_pin);
-
-  String payload = "{";
-  payload += "\"sta_ssid\":\"" + (sta_enabled ? sta_ssid : "") + "\",";
-  payload += "\"sta_pass\":\"" + (sta_enabled ? safe_sta_pass : "") + "\",";
-  payload += "\"sta_ip\":\"" + (connected ? WiFi.localIP().toString() : "") + "\",";
-  payload += "\"sta_gw\":\"" + (connected ? WiFi.gatewayIP().toString() : "") + "\",";
-  payload += "\"sta_bssid\":\"" + (connected ? WiFi.BSSIDstr() : "") + "\",";
-  payload += "\"sta_subnet\":\"" + (connected ? WiFi.subnetMask().toString() : "") + "\",";
-  payload += "\"sta_channel\":" + String(connected ? WiFi.channel() : 0) + ",";
-  payload += "\"sta_rssi\":" + String(connected ? WiFi.RSSI() : 0) + ",";
-  payload += "\"sta_enabled\":" + String(sta_enabled ? "true" : "false") + ",";
-  payload += "\"connected\":" + String(connected ? "true" : "false") + ",";
-  payload += "\"ap_ssid\":\"" + ap_ssid + "\",";
-  payload += "\"ap_pass\":\"" + ap_password + "\",";
-  payload += "\"ap_bssid\":\"" + ap_bssid_str + "\",";
-  payload += "\"ap_channel\":" + String(ap_channel) + ",";
-  payload += "\"effective_channel\":" + String(current_effective_channel) + ",";
-  payload += "\"ap_ip\":\"" + ap_ip_str + "\",";
-  payload += "\"ap_subnet\":\"" + ap_subnet_str + "\",";
-  payload += "\"dhcp_start\":\"" + dhcp_start_str + "\",";
-  payload += "\"dhcp_end\":\"" + dhcp_end_str + "\",";
-  payload += "\"tx_boost\":" + String(tx_power_boost ? "true" : "false") + ",";
-  payload += "\"ble_enabled\":" + String(ble_enabled ? "true" : "false") + ",";
-  payload += "\"ble_pin\":\"" + String(pinBuf) + "\",";
-  payload += "\"napt\":" + String(napt_enabled ? "true" : "false") + ",";
-  payload += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
-  payload += "\"uptime\":" + String(millis() / 1000) + ",";
-  payload += "\"fw_ver\":\"" + FIRMWARE_VERSION + "\",";
-  payload += "\"profiles\":" + serializeProfiles() + ",";
-  payload += "\"logs\":" + serializeLogsJson() + ",";
-  payload += "\"scan_results\":" + (cached_scan_json.length() > 2 ? cached_scan_json : "[]");
-  payload += "}";
-
-  int httpCode = http.POST(payload);
-  if (httpCode == HTTP_CODE_OK) {
-    cloud_online = true;
-    cloud_sync_interval = 5000; // Khi kết nối ổn định: duy trì mỗi 5s
-    String resp = http.getString();
-    http.end();
-
-    // Xử lý các lệnh điều khiển từ xa do Cloudflare Worker chuyển về
-    int cmdIdx = resp.indexOf("\"commands\":[");
-    if (cmdIdx >= 0) {
-      int endBracket = resp.indexOf("]", cmdIdx);
-      if (endBracket > cmdIdx + 12) {
-        String cmdsStr = resp.substring(cmdIdx + 11, endBracket + 1);
-        int cur = 0;
-        while (cur < cmdsStr.length()) {
-          int q1 = cmdsStr.indexOf('\"', cur);
-          if (q1 < 0) break;
-          int q2 = cmdsStr.indexOf('\"', q1 + 1);
-          if (q2 < 0) break;
-          String cmd = cmdsStr.substring(q1 + 1, q2);
-          cmd.trim();
-          if (cmd.length() > 0) {
-            logPrintf("[CLOUD-RX] Nhan lenh tu xa: '%s'", cmd.c_str());
-            handleBleCommand(cmd);
-          }
-          cur = q2 + 1;
-        }
-      }
-    }
-    http.end();
-    client.stop();
-  } else {
-    cloud_online = false;
-    cloud_sync_interval = 45000; // Khi gặp lỗi: giãn cách 45s để không nghẽn AP & CPU
-    logPrintf("[CLOUD] Ket noi that bai (HTTP %d). Thu lai sau 45s...", httpCode);
-    http.end();
-    client.stop();
-  }
-}
-
 // Chuyển đổi giữa IPAddress và uint32_t host order
 uint32_t ipToU32(const IPAddress &ip) {
   return ((uint32_t)ip[0] << 24) | ((uint32_t)ip[1] << 16) | ((uint32_t)ip[2] << 8) | ip[3];
@@ -1703,32 +1522,35 @@ static uint32_t active_pool_end = 0;
 void configureSoftApDhcp(bool randomizePool) {
   esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
   if (ap_netif != NULL) {
-    esp_netif_dhcps_stop(ap_netif);
-
-    dhcps_lease_t lease;
-    memset(&lease, 0, sizeof(lease));
-    lease.enable = true;
-
     IPAddress s_ip, e_ip, gw_ip, sub_ip;
     if (s_ip.fromString(dhcp_start_str) && e_ip.fromString(dhcp_end_str) && 
         gw_ip.fromString(ap_ip_str) && sub_ip.fromString(ap_subnet_str)) {
 
-      // Tu dong kiem tra va sua Subnet Mask neu NVS cu luu 255.255.255.0 gay khac Subnet voi 10.51.31.254
-      if (((uint32_t)s_ip & (uint32_t)sub_ip) != ((uint32_t)gw_ip & (uint32_t)sub_ip)) {
-        ap_subnet_str = "255.255.252.0";
+      // Tu dong kiem tra va dong bo Subnet Mask /24 (255.255.255.0) tuong thich 100% Arduino Core 3.x
+      if (ap_subnet_str == "255.255.252.0" || dhcp_start_str.startsWith("10.51.28.") || 
+          (((uint32_t)s_ip & (uint32_t)sub_ip) != ((uint32_t)gw_ip & (uint32_t)sub_ip))) {
+        ap_subnet_str = "255.255.255.0";
+        dhcp_start_str = "10.51.31.10";
+        dhcp_end_str = "10.51.31.200";
         sub_ip.fromString(ap_subnet_str);
+        s_ip.fromString(dhcp_start_str);
+        e_ip.fromString(dhcp_end_str);
         prefs.begin("gateway", false);
         prefs.putString("ap_subnet", ap_subnet_str);
+        prefs.putString("dhcp_start", dhcp_start_str);
+        prefs.putString("dhcp_end", dhcp_end_str);
         prefs.end();
-        Serial.println("[DHCP] Tu dong dong bo Subnet Mask thanh 255.255.252.0 de dam bao ESP-IDF DHCP hoat dong!");
-        addLogToBuffer("[DHCP] Tu dong dong bo Subnet Mask thanh 255.255.252.0 de dam bao ESP-IDF DHCP hoat dong!");
+        Serial.println("[DHCP] Tu dong dong bo Subnet Mask thanh 255.255.255.0 (/24) va dai IP 10.51.31.10-200!");
+        addLogToBuffer("[DHCP] Tu dong dong bo Subnet Mask thanh 255.255.255.0 (/24) va dai IP 10.51.31.10-200!");
       }
 
-      // Chỉ cấp Gateway khi có kết nối Wi-Fi nguồn (has_uplink)
-      // Khi chưa có Internet STA hoặc chế độ 5G: Gateway là 0.0.0.0 -> Điện thoại giữ nguyên 5G để vào mạng
+      // 1. Cấu hình IP và Subnet cho AP netif trước
       bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
       IPAddress softApGw = has_uplink ? gw_ip : IPAddress(0, 0, 0, 0);
       WiFi.softAPConfig(gw_ip, softApGw, sub_ip);
+
+      // 2. Tạm dừng DHCPS để cấu hình các tùy chọn (DHCP options bắt buộc set khi DHCPS STOPPED)
+      esp_netif_dhcps_stop(ap_netif);
 
       uint32_t s_u32 = ipToU32(s_ip);
       uint32_t e_u32 = ipToU32(e_ip);
@@ -1770,6 +1592,9 @@ void configureSoftApDhcp(bool randomizePool) {
                   dhcp_start_str.c_str(), dhcp_end_str.c_str());
       }
 
+      dhcps_lease_t lease;
+      memset(&lease, 0, sizeof(lease));
+      lease.enable = true;
       lease.start_ip.addr = (uint32_t)u32ToIp(active_pool_start);
       lease.end_ip.addr   = (uint32_t)u32ToIp(active_pool_end);
 
@@ -1783,6 +1608,8 @@ void configureSoftApDhcp(bool randomizePool) {
       if (opt_err != ESP_OK) {
         logPrintf("[DHCP] Set dai IP that bai: %d", opt_err);
       }
+    } else {
+      esp_netif_dhcps_stop(ap_netif);
     }
 
     // 1. Cấu hình Option 3 (Router / Default Gateway):
@@ -1915,9 +1742,9 @@ void handleCaptiveRedirect() {
       server.send(200, "text/plain", "success\n");
       return;
     }
-    // Cac dia chi la khac khi da co Internet hoac mang noi bo: tra ve 404
+    // Cac dia chi la khac khi da co Internet hoac mang noi bo: tra ve 404 (cho phep IP LAN va mDNS esp32.local)
     String host = server.hostHeader();
-    if (host.length() > 0 && host != ap_ip_str) {
+    if (host.length() > 0 && host != ap_ip_str && host != WiFi.localIP().toString() && host.indexOf("esp32.local") == -1) {
       server.send(404, "text/plain", "Not Found");
       return;
     }
@@ -1925,7 +1752,7 @@ void handleCaptiveRedirect() {
 
   // Khi CHUA co Wi-Fi nguon (va dang bat Wi-Fi nguon): chuyen huong tat ca domain la ve Gateway IP de mo trang portal
   String host = server.hostHeader();
-  if (host.length() > 0 && host != ap_ip_str) {
+  if (host.length() > 0 && host != ap_ip_str && host != WiFi.localIP().toString() && host.indexOf("esp32.local") == -1) {
     server.sendHeader("Location", String("http://") + ap_ip_str + "/", true);
     server.send(302, "text/plain", "");
     return;
@@ -1978,10 +1805,6 @@ void handleApiStatus() {
   json += "\"napt\":" + String(napt_enabled ? "true" : "false") + ",";
   json += "\"fw_ver\":\"" + FIRMWARE_VERSION + "\",";
   json += "\"ota_url\":\"" + ota_version_url + "\",";
-  json += "\"cloud_enabled\":" + String(cloud_enabled ? "true" : "false") + ",";
-  json += "\"cloud_url\":\"" + cloud_url + "\",";
-  json += "\"cloud_key\":\"" + cloud_key + "\",";
-  json += "\"cloud_online\":" + String(cloud_online ? "true" : "false") + ",";
   json += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
   json += "\"uptime\":" + String(millis() / 1000);
   json += "}";
@@ -2162,6 +1985,8 @@ void handleApiSetStaMode() {
       stopCaptiveDns();
       stopDnsProxy();
       configureSoftApDhcp(false);
+      delay(50);
+      esp_wifi_deauth_sta(0);
       logMessage("[MODE] Da TAT Wi-Fi nguon -> Che do MANG NOI BO (Dien thoai dung 5G).");
     } else {
       server.send(200, "application/json", "{\"success\":true,\"sta_enabled\":true,\"msg\":\"Da BAT Wi-Fi nguon! ESP32 dang ket noi lai Internet...\"}");
@@ -2178,28 +2003,12 @@ void handleApiSetStaMode() {
   }
 }
 
-// API: Lưu cấu hình quản lý từ xa qua Internet (Cloud Remote Access)
-void handleApiSaveCloud() {
-  if (server.hasArg("enabled")) {
-    String val = server.arg("enabled");
-    cloud_enabled = (val == "1" || val.equalsIgnoreCase("true"));
-    if (server.hasArg("url")) cloud_url = server.arg("url");
-    if (server.hasArg("key")) cloud_key = server.arg("key");
-
-    cloud_url.trim();
-    cloud_key.trim();
-
-    prefs.begin("gateway", false);
-    prefs.putBool("cloud_en", cloud_enabled);
-    prefs.putString("cloud_url", cloud_url);
-    prefs.putString("cloud_key", cloud_key);
-    prefs.end();
-
-    logPrintf("[CLOUD] Da luu cau hinh Cloud Remote: Enabled=%d, URL=%s", cloud_enabled, cloud_url.c_str());
-    server.send(200, "application/json", "{\"success\":true,\"msg\":\"Da luu cau hinh Cloud Remote thanh cong!\"}");
-  } else {
-    server.send(400, "application/json", "{\"error\":\"Thieu tham so enabled\"}");
-  }
+// API: Khởi động lại thiết bị ESP32 (Reboot System)
+void handleApiReboot() {
+  server.send(200, "application/json", "{\"success\":true,\"msg\":\"Dang khoi dong lai ESP32...\"}");
+  logMessage("[SYS] Yeu cau khoi dong lai qua Web Portal!");
+  should_reboot = true;
+  reboot_time = millis() + 500;
 }
 
 // API: Lưu các tham số mạng phát (SoftAP) và khởi động lại
@@ -2521,16 +2330,23 @@ void setup() {
   }
   ap_bssid_str   = prefs.getString("ap_bssid", "84:F1:47:4F:27:A0");
   ap_ip_str      = prefs.getString("ap_ip", "10.51.31.254");
-  ap_subnet_str  = prefs.getString("ap_subnet", "255.255.252.0");
-  dhcp_start_str = prefs.getString("dhcp_start", "10.51.28.10");
-  dhcp_end_str   = prefs.getString("dhcp_end", "10.51.28.200"); // Dải IP cấp ngẫu nhiên
+  ap_subnet_str  = prefs.getString("ap_subnet", "255.255.255.0");
+  dhcp_start_str = prefs.getString("dhcp_start", "10.51.31.10");
+  dhcp_end_str   = prefs.getString("dhcp_end", "10.51.31.200"); // Dải IP cấp ngẫu nhiên
   tx_power_boost = prefs.getBool("tx_boost", false);            // Mặc định KHÔNG BẬT (15 dBm Standard)
   ble_enabled     = prefs.getBool("ble_en", true);               // Bật sóng Bluetooth LE
   ble_pin         = prefs.getUInt("ble_pin", 70213);             // Mã PIN ghép đôi 6 số (070213)
-  cloud_enabled   = prefs.getBool("cloud_en", false);           // Mặc định TẮT đồng bộ Cloudflare Worker để bảo vệ RAM & Wi-Fi AP
-  cloud_url       = prefs.getString("cloud_url", "https://esp32.silversymphony.workers.dev/");
-  cloud_key       = prefs.getString("cloud_key", "070213");
   ota_version_url = prefs.getString("ota_url", "https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/version.json");
+
+  // Tu dong dong bo Subnet Mask /24 (255.255.255.0) neu NVS cu luu 255.255.252.0
+  if (ap_subnet_str == "255.255.252.0" || dhcp_start_str.startsWith("10.51.28.")) {
+    ap_subnet_str = "255.255.255.0";
+    dhcp_start_str = "10.51.31.10";
+    dhcp_end_str = "10.51.31.200";
+    prefs.putString("ap_subnet", ap_subnet_str);
+    prefs.putString("dhcp_start", dhcp_start_str);
+    prefs.putString("dhcp_end", dhcp_end_str);
+  }
   prefs.end();
 
   // Nạp danh sách mẫu cấu hình mạng phát (SoftAP Presets)
@@ -2559,20 +2375,10 @@ void setup() {
   }
 
   // Bước 5: Cấu hình Gateway và Subnet Mask cho mạng phát SoftAP
-  IPAddress ap_ip, gateway, subnet, s_ip;
+  IPAddress ap_ip, gateway, subnet;
   ap_ip.fromString(ap_ip_str);
   gateway = sta_enabled ? ap_ip : IPAddress(0, 0, 0, 0); // 5G mode: gateway = 0.0.0.0
   subnet.fromString(ap_subnet_str);
-  s_ip.fromString(dhcp_start_str);
-
-  if (((uint32_t)s_ip & (uint32_t)subnet) != ((uint32_t)ap_ip & (uint32_t)subnet)) {
-    ap_subnet_str = "255.255.252.0";
-    subnet.fromString(ap_subnet_str);
-    prefs.begin("gateway", false);
-    prefs.putString("ap_subnet", ap_subnet_str);
-    prefs.end();
-    Serial.println("[SETUP] Tu dong dieu chinh ap_subnet thanh 255.255.252.0 de dong bo dai IP!");
-  }
 
   WiFi.softAPConfig(ap_ip, gateway, subnet);
 
@@ -2616,7 +2422,7 @@ void setup() {
   server.on("/api/run_ota", HTTP_POST, handleApiRunOta);
   server.on("/api/save_ota_url", HTTP_POST, handleApiSaveOtaUrl);
   server.on("/api/set_sta_mode", HTTP_POST, handleApiSetStaMode);
-  server.on("/api/save_cloud", HTTP_POST, handleApiSaveCloud);
+  server.on("/api/reboot", HTTP_POST, handleApiReboot);
 
   // Endpoint bẫy Captive Portal (iOS, Android, Windows)
   server.on("/hotspot-detect.html", HTTP_GET, handleCaptiveRedirect); // Apple
@@ -2628,6 +2434,12 @@ void setup() {
 
   server.begin();
   logMessage("[WEB] Web Server cong 80 da san sang!");
+
+  // Bước 8b: Khởi tạo mDNS (http://esp32.local/)
+  if (MDNS.begin("esp32")) {
+    MDNS.addService("http", "tcp", 80);
+    logMessage("[MDNS] Ten mien cuc bo: http://esp32.local/ da san sang!");
+  }
 
   // Bước 9: Kết nối vào Wi-Fi nguồn (STA) nếu được bật
   if (sta_enabled) {
@@ -2753,10 +2565,7 @@ void loop() {
     handleBleCommand(serialCmd);
   }
 
-  // 9. Đồng bộ quản lý từ xa qua Internet (Cloud Remote Access)
-  syncWithCloudServer();
-
-  // 10. Khởi động lại sau khi lưu cấu hình AP
+  // 9. Khởi động lại sau khi lưu cấu hình AP hoặc có lệnh từ Web/BLE
   if (should_reboot && millis() >= reboot_time) {
     logMessage("[REBOOT] Dang khoi dong lai ESP32...");
     delay(100);

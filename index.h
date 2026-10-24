@@ -112,6 +112,9 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         <button type="button" class="lang-btn active" id="btnLangVi" onclick="setLanguage('vi')">🇻🇳 VI</button>
         <button type="button" class="lang-btn" id="btnLangEn" onclick="setLanguage('en')">🇬🇧 EN</button>
       </div>
+      <button type="button" class="btn" style="width: auto; padding: 4px 10px; font-size: 11px; font-weight: 700; background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 4px;" onclick="rebootEsp32()" title="Khởi động lại ESP32">
+        <span>🔄</span> <span id="btnNavReboot">Reboot</span>
+      </button>
       <div id="connBadge" class="badge badge-danger">ĐANG KIỂM TRA</div>
     </div>
   </div>
@@ -444,48 +447,60 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
   <!-- TAB 4: WIRELESS CONSOLE LOG & GITHUB OTA -->
   <div id="tab4" class="hidden">
     
-    <!-- Quản Lý Từ Xa Qua Internet (Cloud Remote Access) -->
+    <!-- Khởi Động Lại Hệ Thống (Reboot System) -->
+    <div class="card" style="background: linear-gradient(135deg, rgba(239, 68, 68, 0.12), rgba(17, 24, 39, 0.9)); border-color: rgba(239, 68, 68, 0.35);">
+      <div class="card-title">
+        <span style="display: flex; align-items: center; gap: 6px;">
+          <span>🔄</span>
+          <span id="cardTitleReboot" style="color: #f87171;">Khởi Động Lại Hệ Thống (Reboot System)</span>
+        </span>
+        <span class="badge" style="background: rgba(239, 68, 68, 0.2); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.4);">RESTART</span>
+      </div>
+      <div id="rebootDesc" style="font-size: 11px; color: #cbd5e1; line-height: 1.5; margin-bottom: 12px;">
+        Khởi động lại chip ESP32 ngay lập tức để làm mới bộ nhớ RAM, giải phóng tài nguyên hệ thống và áp dụng toàn bộ cài đặt.
+      </div>
+      <button type="button" class="btn" style="background: linear-gradient(135deg, #ef4444, #dc2626); color: #fff; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 6px;" onclick="rebootEsp32()">
+        <span>⚡</span> <span id="btnRebootText">Khởi Động Lại ESP32 Ngay</span>
+      </button>
+    </div>
+
+    <!-- Phương Án Truy Cập Trực Tiếp Qua IP & Tên Miền Cục Bộ -->
     <div class="card" style="background: linear-gradient(135deg, rgba(14, 165, 233, 0.12), rgba(17, 24, 39, 0.9)); border-color: rgba(56, 189, 248, 0.35);">
       <div class="card-title">
         <span style="display: flex; align-items: center; gap: 6px;">
-          <span>☁️</span>
-          <span id="cardTitleCloud" style="color: #38bdf8;">Quản Lý Từ Xa Qua Internet (Cloud Remote)</span>
+          <span>🌐</span>
+          <span id="cardTitleDirectAccess" style="color: #38bdf8;">Truy Cập Trực Tiếp Nội Bộ (Direct Local Access)</span>
         </span>
-        <span id="badgeCloudStatus" class="badge badge-danger">OFFLINE</span>
+        <span class="badge badge-success">KHUYẾN NGHỊ</span>
       </div>
-
-      <!-- Switch Bật/Tắt Cloud Remote -->
-      <div class="switch-box switch-box-blue" style="margin-bottom: 12px;">
-        <div>
-          <div class="switch-label-title" id="cloudToggleTitle" style="color: #38bdf8;">Kích hoạt Quản lý Từ xa</div>
-          <div class="switch-label-desc" id="cloudToggleDesc">Kết nối ngầm tới Cloudflare Worker để quản trị từ bất kỳ đâu qua Internet</div>
+      <div style="font-size: 11px; color: #cbd5e1; line-height: 1.5; margin-bottom: 10px;">
+        Hệ thống hỗ trợ 3 phương án truy cập trực tiếp tốc độ cao, hoàn toàn không phụ thuộc Internet đám mây:
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <div style="background: var(--card-inner); padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
+          <div style="font-weight: 700; font-size: 11px; color: #67e8f9;">1. SoftAP Gateway (Khi kết nối Wi-Fi phát):</div>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
+            <a href="http://10.51.31.254" target="_blank" style="color: #fbbf24; font-family: monospace; font-size: 12px; text-decoration: underline;">http://10.51.31.254/</a>
+            <button type="button" class="btn" style="width: auto; padding: 2px 8px; font-size: 10px;" onclick="copyToClipboard('http://10.51.31.254/')">📋 Copy</button>
+          </div>
         </div>
-        <label class="switch">
-          <input type="checkbox" id="cloudRemoteToggle" onchange="toggleCloudRemote(this.checked)">
-          <span class="slider"></span>
-        </label>
-      </div>
-
-      <div class="form-group">
-        <label id="lblCloudUrl">Cloudflare Worker URL</label>
-        <input type="text" id="inputCloudUrl" placeholder="https://my-esp32.workers.dev" style="font-size: 11px;">
-      </div>
-
-      <div class="form-group">
-        <label id="lblCloudKey">Mã Khóa Xác Thực Bí Mật (Secret Access Key)</label>
-        <div class="pass-wrapper">
-          <input type="password" id="inputCloudKey" placeholder="Nhập khóa bảo mật (VD: 070213)">
-          <button class="pass-toggle" type="button" onclick="togglePass('inputCloudKey', this)">👁️</button>
+        <div style="background: var(--card-inner); padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
+          <div style="font-weight: 700; font-size: 11px; color: #67e8f9;">2. IP Mạng Nhà (LAN IP - khi cùng mạng Wi-Fi nguồn):</div>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
+            <a id="linkStaDirectIp" href="#" target="_blank" style="color: #34d399; font-family: monospace; font-size: 12px; text-decoration: underline;">Chưa kết nối Wi-Fi nguồn</a>
+            <button id="btnCopyStaIp" type="button" class="btn hidden" style="width: auto; padding: 2px 8px; font-size: 10px;" onclick="copyStaIp()">📋 Copy</button>
+          </div>
+        </div>
+        <div style="background: var(--card-inner); padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
+          <div style="font-weight: 700; font-size: 11px; color: #67e8f9;">3. Tên Miền Cục Bộ mDNS (Không cần nhớ IP):</div>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
+            <a href="http://esp32.local" target="_blank" style="color: #a78bfa; font-family: monospace; font-size: 12px; text-decoration: underline;">http://esp32.local/</a>
+            <button type="button" class="btn" style="width: auto; padding: 2px 8px; font-size: 10px;" onclick="copyToClipboard('http://esp32.local/')">📋 Copy</button>
+          </div>
         </div>
       </div>
-
-      <div style="display: flex; gap: 8px; margin-top: 10px;">
-        <button class="btn btn-primary" id="btnSaveCloud" onclick="saveCloudConfig()" style="flex: 1;">💾 Lưu Cấu Hình Cloud</button>
-        <a id="btnOpenCloudLink" href="#" target="_blank" class="btn hidden" style="flex: 1; background: #0284c7; color: #fff; text-decoration: none; display: flex; align-items: center; justify-content: center; gap: 4px; font-weight: 700;">🌐 Mở Web Từ Xa ↗</a>
-      </div>
-
-      <div id="cloudExplanation" class="notice" style="color: #cbd5e1; margin-top: 10px; margin-bottom: 0;">
-        💡 <b>Cách hoạt động:</b> Khi ESP32 có Internet, nó sẽ mở một kết nối bảo mật HTTPS ra ngoài tới Cloudflare Worker. Nhờ đó, bạn có thể truy cập Web Portal từ xa qua 4G/5G hoặc bất cứ đâu mà không cần mở cổng modem (Port Forwarding), không sợ nhà mạng chặn CGNAT!
+      <div class="notice" style="margin-top: 8px; margin-bottom: 0; color: #94a3b8; font-size: 10px;">
+        💡 Mật khẩu truy cập Web Portal mặc định là: <b style="color: #fbbf24;">070213</b>
       </div>
     </div>
 
@@ -714,12 +729,11 @@ var I18N = {
     lblDhcpEnd: "Kết thúc:",
     noticeDhcp: "🎲 Hệ thống tự động bốc ngẫu nhiên 1 IP trong dải này cho thiết bị mỗi lần kết nối!",
     btnSaveAp: "💾 Lưu Tham Số & Khởi Động Lại AP",
-    cardTitleCloud: "Quản Lý Từ Xa Qua Internet (Cloud Remote)",
-    cloudToggleTitle: "Kích hoạt Quản lý Từ xa",
-    cloudToggleDesc: "Kết nối ngầm tới Cloudflare Worker để quản trị từ bất kỳ đâu qua Internet",
-    lblCloudUrl: "Cloudflare Worker URL",
-    lblCloudKey: "Mã Khóa Xác Thực Bí Mật (Secret Access Key)",
-    btnSaveCloud: "💾 Lưu Cấu Hình Cloud",
+    cardTitleReboot: "Khởi Động Lại Hệ Thống (Reboot System)",
+    rebootDesc: "Khởi động lại chip ESP32 ngay lập tức để làm mới bộ nhớ RAM, giải phóng tài nguyên hệ thống và áp dụng toàn bộ cài đặt.",
+    btnRebootText: "Khởi Động Lại ESP32 Ngay",
+    btnNavReboot: "Reboot",
+    cardTitleDirectAccess: "Truy Cập Trực Tiếp Nội Bộ (Direct Local Access)",
     cardTitleOta: "Nâng Cấp Firmware Không Dây (GitHub OTA)",
     lblOtaUrl: "Đường dẫn GitHub Version (version.json)",
     btnSaveOtaUrl: "Lưu URL",
@@ -807,12 +821,11 @@ var I18N = {
     lblDhcpEnd: "End:",
     noticeDhcp: "🎲 Randomly allocates an IP within this range on each client connection!",
     btnSaveAp: "💾 Save Parameters & Restart AP",
-    cardTitleCloud: "Remote Internet Management (Cloud Remote)",
-    cloudToggleTitle: "Enable Remote Access",
-    cloudToggleDesc: "Connects outbound to Cloudflare Worker for worldwide remote control",
-    lblCloudUrl: "Cloudflare Worker URL",
-    lblCloudKey: "Secret Access Key / Password",
-    btnSaveCloud: "💾 Save Cloud Config",
+    cardTitleReboot: "Reboot System",
+    rebootDesc: "Immediately restarts the ESP32 to refresh system memory, free resources, and apply all configurations.",
+    btnRebootText: "Reboot ESP32 Now",
+    btnNavReboot: "Reboot",
+    cardTitleDirectAccess: "Direct Local Access",
     cardTitleOta: "Over-the-Air Firmware Upgrade (GitHub OTA)",
     lblOtaUrl: "GitHub Version URL (version.json)",
     btnSaveOtaUrl: "Save URL",
@@ -1067,38 +1080,18 @@ function renderStatus(d) {
     document.getElementById('inputOtaUrl').value = d.ota_url;
   }
 
-  // Cập nhật trạng thái Cloud Remote
-  var cToggle = document.getElementById('cloudRemoteToggle');
-  if (cToggle) cToggle.checked = (d.cloud_enabled === true);
-
-  var cBadge = document.getElementById('badgeCloudStatus');
-  if (cBadge) {
-    if (d.cloud_online) {
-      cBadge.className = 'badge badge-success';
-      cBadge.innerText = 'ONLINE 🟢';
-    } else if (d.cloud_enabled) {
-      cBadge.className = 'badge badge-warning';
-      cBadge.innerText = currentLang === 'en' ? 'CONNECTING...' : 'ĐANG KẾT NỐI...';
+  // Cập nhật liên kết truy cập trực tiếp qua IP mạng nhà (LAN IP)
+  var linkSta = document.getElementById('linkStaDirectIp');
+  var btnCopySta = document.getElementById('btnCopyStaIp');
+  if (linkSta) {
+    if (d.connected && d.sta_ip && d.sta_ip.length > 6) {
+      linkSta.href = 'http://' + d.sta_ip + '/';
+      linkSta.innerText = 'http://' + d.sta_ip + '/';
+      if (btnCopySta) btnCopySta.classList.remove('hidden');
     } else {
-      cBadge.className = 'badge badge-danger';
-      cBadge.innerText = currentLang === 'en' ? 'DISABLED' : 'ĐÃ TẮT';
-    }
-  }
-
-  if (d.cloud_url && !document.getElementById('inputCloudUrl').value) {
-    document.getElementById('inputCloudUrl').value = d.cloud_url;
-  }
-  if (d.cloud_key && !document.getElementById('inputCloudKey').value) {
-    document.getElementById('inputCloudKey').value = d.cloud_key;
-  }
-
-  var cLink = document.getElementById('btnOpenCloudLink');
-  if (cLink) {
-    if (d.cloud_url && d.cloud_url.length > 8) {
-      cLink.href = d.cloud_url;
-      cLink.classList.remove('hidden');
-    } else {
-      cLink.classList.add('hidden');
+      linkSta.removeAttribute('href');
+      linkSta.innerText = currentLang === 'en' ? 'Not connected to Wi-Fi' : 'Chưa kết nối Wi-Fi nguồn';
+      if (btnCopySta) btnCopySta.classList.add('hidden');
     }
   }
 
@@ -1109,8 +1102,8 @@ function renderStatus(d) {
   if (!document.getElementById('apBssidInput').value) document.getElementById('apBssidInput').value = d.ap_bssid || '';
   if (!document.getElementById('apIpInput').value) document.getElementById('apIpInput').value = d.ap_ip || '';
   if (!document.getElementById('apSubnetInput').value) document.getElementById('apSubnetInput').value = d.ap_subnet || '';
-  if (!document.getElementById('dhcpStartInput').value) document.getElementById('dhcpStartInput').value = d.dhcp_start || '10.51.28.10';
-  if (!document.getElementById('dhcpEndInput').value) document.getElementById('dhcpEndInput').value = d.dhcp_end || '10.51.28.200';
+  if (!document.getElementById('dhcpStartInput').value) document.getElementById('dhcpStartInput').value = d.dhcp_start || '10.51.31.10';
+  if (!document.getElementById('dhcpEndInput').value) document.getElementById('dhcpEndInput').value = d.dhcp_end || '10.51.31.200';
   if (d.ap_channel !== undefined) document.getElementById('apChannelSelect').value = d.ap_channel;
 }
 
@@ -1126,29 +1119,54 @@ function updateStatus() {
     });
 }
 
-function saveCloudConfig() {
-  var isEn = document.getElementById('cloudRemoteToggle').checked;
-  var url = document.getElementById('inputCloudUrl').value.trim();
-  var key = document.getElementById('inputCloudKey').value.trim();
-
-  var data = new URLSearchParams();
-  data.append('enabled', isEn ? '1' : '0');
-  data.append('url', url);
-  data.append('key', key);
-
-  fetch('/api/save_cloud', { method: 'POST', body: data })
+function rebootEsp32() {
+  var msg = currentLang === 'en' ? 'Are you sure you want to reboot the ESP32?' : 'Bạn có chắc chắn muốn khởi động lại ESP32 không?';
+  if (!confirm(msg)) return;
+  fetch('/api/reboot', { method: 'POST' })
     .then(function(res) { return res.json(); })
     .then(function(d) {
-      if (d.msg) showToast(d.msg);
-      updateStatus();
+      showToast(currentLang === 'en' ? 'Rebooting ESP32... Please wait 5 seconds.' : 'Đang khởi động lại ESP32... Vui lòng chờ 5 giây.');
+      showRebootOverlay();
     })
     .catch(function(err) {
-      alert(currentLang === 'en' ? 'Error saving Cloud configuration!' : 'Lỗi lưu cấu hình Cloud Remote!');
+      showToast(currentLang === 'en' ? 'Reboot command sent!' : 'Đã gửi lệnh khởi động lại!');
+      showRebootOverlay();
     });
 }
 
-function toggleCloudRemote(isEn) {
-  saveCloudConfig();
+function showRebootOverlay() {
+  var ov = document.createElement('div');
+  ov.id = 'rebootOverlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(3,7,18,0.92);backdrop-filter:blur(8px);z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;font-family:sans-serif;text-align:center;padding:20px;';
+  ov.innerHTML = '<div style="font-size:40px;margin-bottom:12px;animation:spin 1s linear infinite;">🔄</div><h3 style="margin-bottom:6px;">' + (currentLang === 'en' ? 'ESP32 is Rebooting...' : 'Đang khởi động lại ESP32...') + '</h3><p style="font-size:12px;color:#94a3b8;margin-bottom:16px;">' + (currentLang === 'en' ? 'Reconnecting in <b id="rbCount" style="color:#fbbf24;">5</b> seconds' : 'Tự động kết nối lại sau <b id="rbCount" style="color:#fbbf24;">5</b> giây') + '</p>';
+  document.body.appendChild(ov);
+  var c = 5;
+  var t = setInterval(function() {
+    c--;
+    var el = document.getElementById('rbCount');
+    if (el) el.innerText = c;
+    if (c <= 0) {
+      clearInterval(t);
+      window.location.reload();
+    }
+  }, 1000);
+}
+
+function copyToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function() {
+      showToast(currentLang === 'en' ? 'Copied: ' + text : 'Đã sao chép: ' + text);
+    }).catch(function() {
+      prompt(currentLang === 'en' ? 'Copy URL:' : 'Sao chép địa chỉ:', text);
+    });
+  } else {
+    prompt(currentLang === 'en' ? 'Copy URL:' : 'Sao chép địa chỉ:', text);
+  }
+}
+
+function copyStaIp() {
+  var el = document.getElementById('linkStaDirectIp');
+  if (el && el.href) copyToClipboard(el.href);
 }
 
 function toggleStaMode(isEn) {

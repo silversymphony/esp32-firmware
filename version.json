@@ -1,5 +1,5 @@
 {
-  "version": "1.0.8",
+  "version": "1.1.1",
   "url": "https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/esp32-firmware.bin",
-  "changelog": "Bản phát hành v1.0.8: Khắc phục triệt để lỗi bộ chọn ngôn ngữ Tiếng Anh / Tiếng Việt hoạt động mượt mà tức thì kèm hiệu ứng Toast phản hồi; Điều chỉnh dải IP DHCP ngẫu nhiên mặc định thành 10.51.28.10 - 10.51.28.200; Bổ sung tính năng 1-Click sao chép toàn bộ cấu hình Wi-Fi nguồn (STA) thành Preset mạng phát SoftAP (bao gồm SSID, BSSID/MAC, Gateway, Subnet và dải DHCP theo subnet nguồn); Đồng bộ lệnh CLI Terminal 'PROFILE:CLONE'."
+  "changelog": "Bản phát hành v1.1.1: Khắc phục triệt để 3 lỗi: (1) Sửa lỗi vào mạng SoftAP nhưng không có Internet: Khởi tạo bảng NAPT LwIP, bổ sung DNS Relay trên cổng 53 và cấp DNS chính/phụ qua DHCP; (2) Sửa lỗi cập nhật Preset: Thêm ô nhập tên và nút 'Lưu Cập Nhật' trực tiếp trên Web Portal, loại bỏ prompt bị chặn trên iOS/Android, thêm escape JSON; (3) Sửa lỗi cập nhật OTA: Viết lại tiến trình tải Flash bằng HTTPClient + Update streaming trực tiếp, chống tràn RAM mbedTLS và xử lý redirect 302 từ GitHub."
 }

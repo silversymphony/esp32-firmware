@@ -1,5 +1,5 @@
 {
-  "version": "1.1.1",
+  "version": "1.2.0",
   "url": "https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/esp32-firmware.bin",
-  "changelog": "Bản phát hành v1.1.1: Khắc phục triệt để 3 lỗi: (1) Sửa lỗi vào mạng SoftAP nhưng không có Internet: Khởi tạo bảng NAPT LwIP, bổ sung DNS Relay trên cổng 53 và cấp DNS chính/phụ qua DHCP; (2) Sửa lỗi cập nhật Preset: Thêm ô nhập tên và nút 'Lưu Cập Nhật' trực tiếp trên Web Portal, loại bỏ prompt bị chặn trên iOS/Android, thêm escape JSON; (3) Sửa lỗi cập nhật OTA: Viết lại tiến trình tải Flash bằng HTTPClient + Update streaming trực tiếp, chống tràn RAM mbedTLS và xử lý redirect 302 từ GitHub."
+  "changelog": "Bản phát hành v1.2.0: Bổ sung tùy chọn Bật/Tắt Wi-Fi nguồn (STA). Khi tắt, ESP32 chuyển sang chế độ Mạng nội bộ Offline (Local LAN), tự động ngắt Option 3 (Default Gateway) và Option 6 (DNS) trên DHCP Server, cho phép điện thoại kết nối vào Wi-Fi SoftAP vẫn giữ nguyên mạng 5G Cellular để lướt Web/App mà không bị gián đoạn."
 }

@@ -1406,17 +1406,13 @@ void performGithubOta(const String &binUrl) {
 
   WiFiClientSecure client;
   client.setInsecure();
-#if !defined(ESP_ARDUINO_VERSION_MAJOR) || (ESP_ARDUINO_VERSION_MAJOR < 3)
-  client.setBufferSizes(4096, 1024); // Tối ưu RAM cho mbedTLS trên ESP32 Core 2.x
-#endif
 
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setTimeout(25000);
+  http.setTimeout(30000);
 
   if (!http.begin(client, binUrl)) {
     logMessage("[OTA-LOI] Khong the khoi tao ket noi HTTPS den GitHub!");
-    client.stop();
     return;
   }
 
@@ -1428,7 +1424,7 @@ void performGithubOta(const String &binUrl) {
     logPrintf("[OTA] Kich thuoc Firmware: %d bytes (%.2f MB)", contentLength, (float)contentLength / (1024.0 * 1024.0));
 
     if (contentLength <= 0) {
-      logMessage("[OTA-LOI] Khong xac dinh duoc kich thuoc file (Content-Length = 0)!");
+      logMessage("[OTA-LOI] Khong xac dinh duoc kich thuoc file (Content-Length <= 0)!");
       http.end();
       return;
     }
@@ -1439,32 +1435,17 @@ void performGithubOta(const String &binUrl) {
       return;
     }
 
-    WiFiClient *stream = http.getStreamPtr();
-    size_t written = 0;
-    int prevPercent = -1;
-    uint8_t buff[1024];
-
-    while (http.connected() && (written < (size_t)contentLength)) {
-      size_t avail = stream->available();
-      if (avail > 0) {
-        int bytesToRead = avail > sizeof(buff) ? sizeof(buff) : avail;
-        if (bytesToRead > (int)(contentLength - written)) {
-          bytesToRead = contentLength - written;
-        }
-        int readBytes = stream->readBytes(buff, bytesToRead);
-        if (readBytes > 0) {
-          Update.write(buff, readBytes);
-          written += readBytes;
-          int percent = (written * 100) / contentLength;
-          if (percent != prevPercent && (percent % 10 == 0 || percent == 100)) {
-            prevPercent = percent;
-            logPrintf("[OTA] Ghi Flash: %d%% (%d / %d bytes)", percent, (int)written, contentLength);
-          }
-        }
-      } else {
-        delay(10);
+    Update.onProgress([](size_t cur, size_t total) {
+      static int prevPercent = -1;
+      int percent = (cur * 100) / total;
+      if (percent != prevPercent && (percent % 10 == 0 || percent == 100)) {
+        prevPercent = percent;
+        logPrintf("[OTA] Ghi Flash: %d%% (%u / %u bytes)", percent, cur, total);
       }
-    }
+    });
+
+    WiFiClient *stream = http.getStreamPtr();
+    size_t written = Update.writeStream(*stream);
 
     if (Update.end()) {
       if (Update.isFinished()) {
@@ -1472,7 +1453,7 @@ void performGithubOta(const String &binUrl) {
         delay(1000);
         ESP.restart();
       } else {
-        logMessage("[OTA-LOI] Qua trinh ghi Flash chua hoan tat day du!");
+        logPrintf("[OTA-LOI] Ghi Flash chua hoan tat day du! Da ghi: %u / %d bytes", written, contentLength);
       }
     } else {
       logPrintf("[OTA-LOI] Loi ket thuc Update (Ma loi: %d)", Update.getError());
@@ -1481,7 +1462,6 @@ void performGithubOta(const String &binUrl) {
     logPrintf("[OTA-LOI] May chu GitHub tra ve ma loi: %d", httpCode);
   }
   http.end();
-  client.stop();
 }
 
 // Đồng bộ hai chiều với Cloudflare Worker qua HTTPS (Gửi trạng thái & nhận lệnh từ xa)
@@ -1636,6 +1616,10 @@ void handleDnsProxy() {}
 void enableNapt() {
   if (!napt_enabled) {
     esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (sta_netif != NULL) {
+      esp_netif_set_default_netif(sta_netif);
+    }
     if (ap_netif != NULL) {
       esp_netif_napt_enable(ap_netif);
       esp_netif_ip_info_t ip_info;
@@ -1733,9 +1717,10 @@ void configureSoftApDhcp(bool randomizePool) {
         addLogToBuffer("[DHCP] Tu dong dong bo Subnet Mask thanh 255.255.252.0 de dam bao ESP-IDF DHCP hoat dong!");
       }
 
-      // Khi sta_enabled: Cấp Gateway là ap_ip để làm Default Router cho client
-      // Khi sta_enabled == false (Chế độ 5G): Gateway là 0.0.0.0 để DHCP KHÔNG cấp Router -> Điện thoại dùng 5G cho Internet
-      IPAddress softApGw = sta_enabled ? gw_ip : IPAddress(0, 0, 0, 0);
+      // Chỉ cấp Gateway khi có kết nối Wi-Fi nguồn (has_uplink)
+      // Khi chưa có Internet STA hoặc chế độ 5G: Gateway là 0.0.0.0 -> Điện thoại giữ nguyên 5G để vào mạng
+      bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
+      IPAddress softApGw = has_uplink ? gw_ip : IPAddress(0, 0, 0, 0);
       WiFi.softAPConfig(gw_ip, softApGw, sub_ip);
 
       uint32_t s_u32 = ipToU32(s_ip);
@@ -1794,9 +1779,10 @@ void configureSoftApDhcp(bool randomizePool) {
     }
 
     // 1. Cấu hình Option 3 (Router / Default Gateway):
-    // Khi sta_enabled: Cấp Gateway là ap_ip để làm Default Router cho client
-    // Khi sta_enabled == false (Chế độ 5G): TẮT HOÀN TOÀN Option 3 (OFFER_ROUTER = 0) -> Điện thoại giữ nguyên 5G cho Internet!
-    dhcps_offer_t dhcps_router_value = sta_enabled ? OFFER_ROUTER : 0;
+    // Chỉ cấp Gateway khi THỰC SỰ có kết nối Wi-Fi nguồn (has_uplink)
+    // Khi chưa có Internet STA hoặc khi tắt STA (chế độ 5G): TẮT Option 3 (OFFER_ROUTER = 0) -> Điện thoại dùng 5G không bị mất mạng!
+    bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
+    dhcps_offer_t dhcps_router_value = has_uplink ? OFFER_ROUTER : 0;
     esp_netif_dhcps_option(
       ap_netif,
       ESP_NETIF_OP_SET,
@@ -1806,9 +1792,9 @@ void configureSoftApDhcp(bool randomizePool) {
     );
 
     // 2. Cấu hình Option 6 (Domain Name Server - DNS):
-    // Khi sta_enabled: Cấp DNS Server thực tế từ Wi-Fi nguồn hoặc Google/Cloudflare DNS để client duyệt web trực tiếp qua NAPT
-    // Khi sta_enabled == false (Chế độ 5G): KHÔNG cấp DNS (dhcps_dns_value = 0) để điện thoại dùng DNS 5G
-    dhcps_offer_t dhcps_dns_value = sta_enabled ? OFFER_DNS : 0;
+    // Khi có Internet STA: Cấp DNS Server để client duyệt web trực tiếp qua NAPT
+    // Khi chưa có Internet STA: KHÔNG cấp DNS (dhcps_dns_value = 0) để điện thoại dùng DNS 5G
+    dhcps_offer_t dhcps_dns_value = has_uplink ? OFFER_DNS : 0;
     esp_netif_dhcps_option(
       ap_netif,
       ESP_NETIF_OP_SET,

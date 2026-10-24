@@ -1465,7 +1465,7 @@ void performGithubOta(const String &binUrl) {
 }
 
 // Đồng bộ hai chiều với Cloudflare Worker qua HTTPS (Gửi trạng thái & nhận lệnh từ xa)
-static unsigned long cloud_sync_interval = 3500;
+static unsigned long cloud_sync_interval = 5000;
 
 void syncWithCloudServer() {
   if (!cloud_enabled || cloud_url.length() < 8 || WiFi.status() != WL_CONNECTED) {
@@ -1473,22 +1473,29 @@ void syncWithCloudServer() {
     return;
   }
 
-  // Giới hạn tần suất đồng bộ; khi gặp lỗi tự động giãn cách 15s để không nghẽn Wi-Fi AP & CPU
+  // Giới hạn tần suất đồng bộ; khi gặp lỗi tự động giãn cách 45s để không nghẽn Wi-Fi AP & CPU
   if (millis() - last_cloud_sync < cloud_sync_interval) {
     return;
   }
   last_cloud_sync = millis();
 
+  // BẢO VỆ PHẦN CỨNG: Nếu RAM còn dưới 45KB, mbedTLS sẽ ngốn hết RAM làm văng Wi-Fi AP -> Tự động bỏ qua
+  if (ESP.getFreeHeap() < 45000) {
+    cloud_online = false;
+    cloud_sync_interval = 30000;
+    return;
+  }
+
   WiFiClientSecure client;
   client.setInsecure();
-  client.setTimeout(4);
+  client.setTimeout(2);
   #if !defined(ESP_ARDUINO_VERSION_MAJOR) || (ESP_ARDUINO_VERSION_MAJOR < 3)
   client.setBufferSizes(2048, 512);
   #endif
 
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setTimeout(4000);
+  http.setTimeout(2500);
 
   String syncUrl = cloud_url;
   if (!syncUrl.endsWith("/")) syncUrl += "/";
@@ -1496,7 +1503,7 @@ void syncWithCloudServer() {
 
   if (!http.begin(client, syncUrl)) {
     cloud_online = false;
-    cloud_sync_interval = 15000;
+    cloud_sync_interval = 45000;
     client.stop();
     return;
   }
@@ -1547,7 +1554,7 @@ void syncWithCloudServer() {
   int httpCode = http.POST(payload);
   if (httpCode == HTTP_CODE_OK) {
     cloud_online = true;
-    cloud_sync_interval = 3500; // Khi kết nối ổn định: duy trì mỗi 3.5s
+    cloud_sync_interval = 5000; // Khi kết nối ổn định: duy trì mỗi 5s
     String resp = http.getString();
     http.end();
 
@@ -1577,8 +1584,8 @@ void syncWithCloudServer() {
     client.stop();
   } else {
     cloud_online = false;
-    cloud_sync_interval = 15000; // Khi gặp lỗi (404, ngắt kết nối): giãn cách 15s để không nghẽn AP & CPU
-    logPrintf("[CLOUD] Ket noi that bai (HTTP %d). Thu lai sau 15s...", httpCode);
+    cloud_sync_interval = 45000; // Khi gặp lỗi: giãn cách 45s để không nghẽn AP & CPU
+    logPrintf("[CLOUD] Ket noi that bai (HTTP %d). Thu lai sau 45s...", httpCode);
     http.end();
     client.stop();
   }
@@ -2520,7 +2527,7 @@ void setup() {
   tx_power_boost = prefs.getBool("tx_boost", false);            // Mặc định KHÔNG BẬT (15 dBm Standard)
   ble_enabled     = prefs.getBool("ble_en", true);               // Bật sóng Bluetooth LE
   ble_pin         = prefs.getUInt("ble_pin", 70213);             // Mã PIN ghép đôi 6 số (070213)
-  cloud_enabled   = prefs.getBool("cloud_en", true);            // Mặc định BẬT đồng bộ Cloudflare Worker
+  cloud_enabled   = prefs.getBool("cloud_en", false);           // Mặc định TẮT đồng bộ Cloudflare Worker để bảo vệ RAM & Wi-Fi AP
   cloud_url       = prefs.getString("cloud_url", "https://esp32.silversymphony.workers.dev/");
   cloud_key       = prefs.getString("cloud_key", "070213");
   ota_version_url = prefs.getString("ota_url", "https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/version.json");

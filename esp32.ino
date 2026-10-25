@@ -180,7 +180,7 @@ String pending_ble_cmd = "";
 // =========================================================================
 //              HỆ THỐNG GHI NHẬT KÝ KHÔNG DÂY (LOG BUFFER)
 // =========================================================================
-#define LOG_BUFFER_SIZE 35
+#define LOG_BUFFER_SIZE 120
 String logBuffer[LOG_BUFFER_SIZE];
 int logHead = 0;
 int logCount = 0;
@@ -284,6 +284,20 @@ void setBleRadio(bool enable) {
 // Phản hồi kết quả lệnh trực tiếp ra USB Serial Monitor và Bluetooth LE Console
 void sendResponse(const String &msg) {
   Serial.println(msg);
+
+  // Đồng bộ toàn bộ phản hồi vào Web Portal Log Buffer (tách theo từng dòng)
+  int sIdx = 0;
+  int mLen = msg.length();
+  while (sIdx < mLen) {
+    int nl = msg.indexOf('\n', sIdx);
+    String l = (nl >= 0) ? msg.substring(sIdx, nl) : msg.substring(sIdx);
+    l.trim();
+    if (l.length() > 0) {
+      addLogToBuffer(l);
+    }
+    if (nl >= 0) sIdx = nl + 1;
+    else break;
+  }
 
   if (!bleConnected || pBleTxChar == NULL) return;
 
@@ -1304,16 +1318,20 @@ bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &e
 
   logPrintf("[OTA] Dang kiem tra version tu: %s", ota_version_url.c_str());
 
+  // Đảm bảo DNS 8.8.8.8 và 1.1.1.1 để phân giải domain GitHub không bị chặn bởi modem nhà mạng
+  ip_addr_t dns1, dns2;
+  IP_ADDR4(&dns1, 8, 8, 8, 8);
+  IP_ADDR4(&dns2, 1, 1, 1, 1);
+  dns_setserver(0, &dns1);
+  dns_setserver(1, &dns2);
+
   WiFiClientSecure client;
   client.setInsecure(); // Kết nối GitHub HTTPS không cần nạp CA root certificate
-#if !defined(ESP_ARDUINO_VERSION_MAJOR) || (ESP_ARDUINO_VERSION_MAJOR < 3)
-  client.setBufferSizes(2048, 512); // Tối ưu RAM cho mbedTLS trên ESP32 Core 2.x
-#endif
-  client.setTimeout(8);
+  client.setTimeout(15000); // 15 giây (khắc phục lỗi 8ms gây timeout bắt tay SSL)
 
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setTimeout(8000);
+  http.setTimeout(15000);
 
   if (!http.begin(client, ota_version_url)) {
     client.stop();
@@ -1350,8 +1368,16 @@ bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &e
 void performGithubOta(const String &binUrl) {
   logPrintf("[OTA] Bat dau tai firmware va ghi Flash tu: %s", binUrl.c_str());
 
+  // Đảm bảo DNS 8.8.8.8 và 1.1.1.1
+  ip_addr_t dns1, dns2;
+  IP_ADDR4(&dns1, 8, 8, 8, 8);
+  IP_ADDR4(&dns2, 1, 1, 1, 1);
+  dns_setserver(0, &dns1);
+  dns_setserver(1, &dns2);
+
   WiFiClientSecure client;
   client.setInsecure();
+  client.setTimeout(30000);
 
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
@@ -1696,6 +1722,22 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
              WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str());
     Serial.println(buf);
     addLogToBuffer(String(buf));
+
+    // Cấu hình DNS Google (8.8.8.8) và Cloudflare (1.1.1.1) cho ESP32
+    esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (sta_netif != NULL) {
+      esp_netif_dns_info_t dns_g, dns_cf;
+      dns_g.ip.type = IPADDR_TYPE_V4;
+      dns_g.ip.u_addr.ip4.addr = (uint32_t)IPAddress(8, 8, 8, 8);
+      dns_cf.ip.type = IPADDR_TYPE_V4;
+      dns_cf.ip.u_addr.ip4.addr = (uint32_t)IPAddress(1, 1, 1, 1);
+      esp_netif_set_dns_info(sta_netif, ESP_NETIF_DNS_MAIN, &dns_g);
+      esp_netif_set_dns_info(sta_netif, ESP_NETIF_DNS_BACKUP, &dns_cf);
+    }
+    ip_addr_t dnsserver;
+    IP_ADDR4(&dnsserver, 8, 8, 8, 8);
+    dns_setserver(0, &dnsserver);
+
     enableNapt();
     stopCaptiveDns();
     configureSoftApDhcp(false);
@@ -1754,15 +1796,32 @@ void handleCaptiveRedirect() {
   }
 
   // 2. Khi ở chế độ mạng nội bộ Offline (sta_enabled == false):
-  // KHÔNG giả mạo Internet! Trả về 404 cho probe/domain lạ để điện thoại nhận biết Wi-Fi không có Internet và tự dùng 5G
+  // Phản hồi Success / 204 cho các probe kiểm tra để điện thoại không báo lỗi mạng/không hiện popup,
+  // đồng thời vì DHCP server KHÔNG cấp Option 3 (Gateway), điện thoại sẽ tự động định tuyến 100% Internet qua 5G
   if (!sta_enabled) {
-    if (uri.indexOf("hotspot-detect") >= 0 || uri.indexOf("generate_204") >= 0 || uri.indexOf("gen_204") >= 0 || uri.indexOf("connecttest") >= 0 || uri.indexOf("ncsi") >= 0) {
-      server.send(404, "text/plain", "Offline Local Network");
+    if (uri.indexOf("hotspot-detect") >= 0 || uri.indexOf("success.html") >= 0 || uri.indexOf("canonical") >= 0) {
+      server.send(200, "text/html", "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
+      return;
+    }
+    if (uri.indexOf("generate_204") >= 0 || uri.indexOf("gen_204") >= 0) {
+      server.send(204, "text/plain", "");
+      return;
+    }
+    if (uri.indexOf("connecttest") >= 0) {
+      server.send(200, "text/plain", "Microsoft Connect Test");
+      return;
+    }
+    if (uri.indexOf("ncsi") >= 0) {
+      server.send(200, "text/plain", "Microsoft NCSI");
+      return;
+    }
+    if (uri.indexOf("success.txt") >= 0) {
+      server.send(200, "text/plain", "success\n");
       return;
     }
     String host = server.hostHeader();
     if (host.length() > 0 && host != ap_ip_str && host != WiFi.localIP().toString() && host.indexOf("esp32.local") == -1) {
-      server.send(404, "text/plain", "Offline Local Network");
+      server.send(404, "text/plain", "Not Found");
       return;
     }
     handleRoot();
@@ -1920,11 +1979,11 @@ String performWifiScanJson() {
     WiFi.mode(WIFI_AP_STA);
     delay(40);
   }
-  if (WiFi.status() != WL_CONNECTED) {
+  if (WiFi.status() != WL_CONNECTED && WiFi.status() != WL_IDLE_STATUS) {
     WiFi.disconnect(false);
   }
   logMessage("[SCAN] Dang thuc hien quet Wi-Fi 2.4GHz...");
-  int n = WiFi.scanNetworks(false, false, false, 120);
+  int n = WiFi.scanNetworks(false, false, false, 40);
   if (n >= 0) {
     String json = "[";
     for (int i = 0; i < n; i++) {
@@ -1985,13 +2044,13 @@ void handleApiScan() {
   // Khởi động tiến trình quét mới bất đồng bộ
   if (WiFi.getMode() == WIFI_AP) {
     WiFi.mode(WIFI_AP_STA);
-    delay(40);
+    delay(30);
   }
-  if (WiFi.status() != WL_CONNECTED) {
+  if (WiFi.status() != WL_CONNECTED && WiFi.status() != WL_IDLE_STATUS) {
     WiFi.disconnect(false);
   }
   logMessage("[SCAN] Bat dau quet song Wi-Fi bat dong bo (Async Scan)...");
-  int16_t startResult = WiFi.scanNetworks(true, false, false, 150);
+  int16_t startResult = WiFi.scanNetworks(true, false, false, 40);
   if (startResult == WIFI_SCAN_RUNNING || startResult >= 0) {
     server.send(200, "application/json", "{\"status\":\"scanning\"}");
   } else {

@@ -1,13 +1,13 @@
 /**
  * =========================================================================
- *   CLOUDFLARE WORKER: ESP32 GATEWAY FULL REMOTE WEB PORTAL (V1.3.5)
+ *   CLOUDFLARE WORKER: ESP32 GATEWAY FULL REMOTE WEB PORTAL (V1.3.4)
  * =========================================================================
  * Giao diện 100% ĐỒNG NHẤT với Web Portal nội bộ của ESP32 (index.h).
  * Hỗ trợ điều khiển đầy đủ: 4 Tabs, Preset Profiles, Power Boost, OTA, NAPT.
  * =========================================================================
  */
 
-const DEFAULT_ACCESS_KEY = "070213";
+const DEFAULT_ACCESS_KEY = "686868";
 
 let deviceStatus = {
   sta_enabled: true,
@@ -31,16 +31,16 @@ let deviceStatus = {
   dhcp_end: "10.51.28.200",
   tx_boost: false,
   ble_enabled: true,
-  ble_pin: "070213",
+  ble_pin: "686868",
   napt: false,
   ota_url: "https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/version.json",
   cloud_enabled: true,
   cloud_url: "",
-  cloud_key: "070213",
+  cloud_key: "686868",
   cloud_online: true,
   free_heap: 0,
   uptime: 0,
-  fw_ver: "1.3.5",
+  fw_ver: "1.3.4",
   scan_results: []
 };
 
@@ -109,7 +109,7 @@ function renderLoginHtml(errMsg = "") {
   <p>Vui lòng nhập Access Key (Mã PIN bảo mật) để truy cập Web Portal.</p>
   ${errMsg ? `<div class="err">${errMsg}</div>` : ""}
   <form method="POST" action="/login">
-    <input type="password" name="access_key" placeholder="Mã PIN (Mặc định: 070213)" required autofocus>
+    <input type="password" name="access_key" placeholder="Mã PIN (Mặc định: 686868)" required autofocus>
     <button type="submit">Truy Cập Web Portal 🚀</button>
   </form>
 </div>
@@ -218,7 +218,7 @@ const PORTAL_HTML = `
     <div class="header-left">
       <div class="header-icon">📶</div>
       <div>
-        <div class="header-title" id="headerTitle">ESP32 Gateway Manager</div>
+        <div class="header-title" id="headerTitle" style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;"><span>ESP32 Gateway Manager</span><span id="cloudLiveBadge" class="badge badge-success" style="font-size:9px;padding:2px 6px;letter-spacing:0.3px;">☁️ CLOUD REMOTE</span></div>
         <div class="header-ip" id="headIp">10.51.31.254</div>
       </div>
     </div>
@@ -335,7 +335,7 @@ const PORTAL_HTML = `
         <span style="font-size: 20px;">ᛒ</span>
         <div>
           <div id="lblBleTitle" style="font-size: 12px; font-weight: 700; color: #93c5fd;">Bluetooth LE Bảo Mật (PIN)</div>
-          <div style="font-size: 10px; color: #9ca3af; font-family: monospace;"><span id="lblBleSub">Tên: ESP32-Gateway-BLE • PIN: </span><span id="dashBlePin" style="color:#fbbf24; font-weight:bold;">070213</span></div>
+          <div style="font-size: 10px; color: #9ca3af; font-family: monospace;"><span id="lblBleSub">Tên: ESP32-Gateway-BLE • PIN: </span><span id="dashBlePin" style="color:#fbbf24; font-weight:bold;">686868</span></div>
         </div>
       </div>
       <span id="valBleBadge" class="badge badge-success">ĐÃ BẬT</span>
@@ -356,7 +356,7 @@ const PORTAL_HTML = `
         <div style="width: 1px; background: var(--border);"></div>
         <div>
           <div class="info-label" id="lblFwVer">Firmware</div>
-          <div class="info-val" style="color: #fbbf24;" id="valFwVer">v1.3.5</div>
+          <div class="info-val" style="color: #fbbf24;" id="valFwVer">v1.3.4</div>
         </div>
         <div style="width: 1px; background: var(--border);"></div>
         <div>
@@ -589,7 +589,7 @@ const PORTAL_HTML = `
       <div class="form-group">
         <label id="lblCloudKey">Mã Khóa Xác Thực Bí Mật (Secret Access Key)</label>
         <div class="pass-wrapper">
-          <input type="password" id="inputCloudKey" placeholder="Nhập khóa bảo mật (VD: 070213)">
+          <input type="password" id="inputCloudKey" placeholder="Nhập khóa bảo mật (VD: 686868)">
           <button class="pass-toggle" type="button" onclick="togglePass('inputCloudKey', this)">👁️</button>
         </div>
       </div>
@@ -611,7 +611,7 @@ const PORTAL_HTML = `
           <span>🚀</span>
           <span id="cardTitleOta" style="color: #a5b4fc;">Nâng Cấp Firmware Không Dây (GitHub OTA)</span>
         </span>
-        <span id="badgeFwVerOta" class="badge" style="background: rgba(99, 102, 241, 0.2); color: #c7d2fe; border: 1px solid rgba(99, 102, 241, 0.4);">v1.3.5</span>
+        <span id="badgeFwVerOta" class="badge" style="background: rgba(99, 102, 241, 0.2); color: #c7d2fe; border: 1px solid rgba(99, 102, 241, 0.4);">v1.3.4</span>
       </div>
 
       <div class="form-group">
@@ -685,7 +685,7 @@ const PORTAL_HTML = `
         <label id="lblBlePin">Mã PIN Ghép Đôi Bảo Mật (Đúng 6 Chữ Số)</label>
         <div style="display: flex; gap: 8px;">
           <div class="pass-wrapper" style="flex: 1;">
-            <input type="password" id="inputBlePin" maxlength="6" placeholder="VD: 070213" style="font-weight: 700; letter-spacing: 2px; text-align: center; color: #fbbf24;">
+            <input type="password" id="inputBlePin" maxlength="6" placeholder="VD: 686868" style="font-weight: 700; letter-spacing: 2px; text-align: center; color: #fbbf24;">
             <button class="pass-toggle" type="button" onclick="togglePass('inputBlePin', this)">👁️</button>
           </div>
           <button class="btn btn-primary" id="btnSavePin" style="width: auto; padding: 0 16px; font-size: 11px;" onclick="saveBlePin()">💾 Lưu PIN</button>
@@ -718,7 +718,7 @@ const PORTAL_HTML = `
   <div class="footer">
     <div id="footerDesc">ESP32 NAPT Repeater Gateway • Built with Custom Random DHCP, BLE Security & GitHub OTA</div>
     <div style="margin-top: 5px; color: #9ca3af; font-size: 11px;">
-      <span id="footerFwLabel">Firmware:</span> <span id="footerFwVer" style="color: #fbbf24; font-weight: 700;">v1.3.5</span>
+      <span id="footerFwLabel">Firmware:</span> <span id="footerFwVer" style="color: #fbbf24; font-weight: 700;">v1.3.4</span>
     </div>
   </div>
 </div>
@@ -798,7 +798,7 @@ var I18N = {
     lblStaOfflineDesc: "Wi-Fi nguồn đã tắt. Điện thoại kết nối vào Wi-Fi này sẽ tự động dùng dữ liệu di động 5G để truy cập Internet mà không bị gián đoạn.",
     cardTitleScan: "Quét Mạng Wi-Fi 2.4GHz",
     scanBtn: "🔍 Quét mạng",
-    scanPlaceholder: "Bấm nút \"Quét mạng\" để tìm Wi-Fi xung quanh...",
+    scanPlaceholder: "Bấm nút \\"Quét mạng\\" để tìm Wi-Fi xung quanh...",
     lblInputStaSsid: "Tên Wi-Fi Nguồn (SSID)",
     phStaSsid: "Nhập hoặc chọn Wi-Fi bên trên",
     lblInputStaPass: "Mật khẩu Wi-Fi Nguồn",
@@ -849,7 +849,7 @@ var I18N = {
     lblBlePin: "Mã PIN Ghép Đôi Bảo Mật (Đúng 6 Chữ Số)",
     btnSavePin: "💾 Lưu PIN",
     hintBlePin: "Dùng mã PIN này khi điện thoại yêu cầu ghép đôi Bluetooth.",
-    bleExplanation: "🔒 <b>Bảo mật bằng mã PIN phần cứng (BLE Passkey):</b><br>• Khi điện thoại kết nối, hệ điều hành sẽ yêu cầu nhập mã PIN 6 số để ghép đôi mã hóa.<br>• Sau khi ghép đôi thành công, log sẽ tự động truyền trực tiếp không dây và có thể gửi lệnh ngay mà <b>không cần bước xác thực phụ</b>.<br>• <b>Đổi mã PIN nhanh qua BLE:</b> Gõ lệnh <code style=\"color: #34d399;\">SETPIN:&lt;mã_mới&gt;</code> trên terminal.",
+    bleExplanation: "🔒 <b>Bảo mật bằng mã PIN phần cứng (BLE Passkey):</b><br>• Khi điện thoại kết nối, hệ điều hành sẽ yêu cầu nhập mã PIN 6 số để ghép đôi mã hóa.<br>• Sau khi ghép đôi thành công, log sẽ tự động truyền trực tiếp không dây và có thể gửi lệnh ngay mà <b>không cần bước xác thực phụ</b>.<br>• <b>Đổi mã PIN nhanh qua BLE:</b> Gõ lệnh <code style=\\"color: #34d399;\\">SETPIN:&lt;mã_mới&gt;</code> trên terminal.",
     cardTitleTerm: "📟 Nhật Ký Hoạt Động (Wireless Console Log)",
     btnClearLogs: "Xóa log",
     footerDesc: "ESP32 NAPT Repeater Gateway • Built with Custom Random DHCP, BLE Security & GitHub OTA",
@@ -891,7 +891,7 @@ var I18N = {
     lblStaOfflineDesc: "Source Wi-Fi is disabled. Phones connected to this Wi-Fi will keep using 5G mobile data for Internet access.",
     cardTitleScan: "Scan 2.4GHz Wi-Fi Networks",
     scanBtn: "🔍 Scan Wi-Fi",
-    scanPlaceholder: "Click \"Scan Wi-Fi\" to find nearby networks...",
+    scanPlaceholder: "Click \\"Scan Wi-Fi\\" to find nearby networks...",
     lblInputStaSsid: "Source Wi-Fi Name (SSID)",
     phStaSsid: "Enter or select Wi-Fi above",
     lblInputStaPass: "Source Wi-Fi Password",
@@ -942,7 +942,7 @@ var I18N = {
     lblBlePin: "Secure Pairing PIN (Exactly 6 Digits)",
     btnSavePin: "💾 Save PIN",
     hintBlePin: "Use this PIN when phone requests Bluetooth pairing.",
-    bleExplanation: "🔒 <b>Hardware BLE Passkey Security:</b><br>• When your phone connects, the OS prompts for the 6-digit PIN to establish encrypted pairing.<br>• Once paired, logs stream wirelessly and commands can be executed immediately <b>without secondary auth</b>.<br>• <b>Fast PIN update via BLE:</b> Send <code style=\"color: #34d399;\">SETPIN:&lt;new_pin&gt;</code> on terminal.",
+    bleExplanation: "🔒 <b>Hardware BLE Passkey Security:</b><br>• When your phone connects, the OS prompts for the 6-digit PIN to establish encrypted pairing.<br>• Once paired, logs stream wirelessly and commands can be executed immediately <b>without secondary auth</b>.<br>• <b>Fast PIN update via BLE:</b> Send <code style=\\"color: #34d399;\\">SETPIN:&lt;new_pin&gt;</code> on terminal.",
     cardTitleTerm: "📟 Wireless Console Log",
     btnClearLogs: "Clear log",
     footerDesc: "ESP32 NAPT Repeater Gateway • Built with Custom Random DHCP, BLE Security & GitHub OTA",
@@ -1144,8 +1144,7 @@ function renderStatus(d) {
   var bBadge = document.getElementById('valBleBadge');
   var bBadgeTab4 = document.getElementById('bleStatusBadgeTab4');
   var bToggle = document.getElementById('bleRadioToggle');
-  var pinFormatted = (d.ble_pin !== undefined && d.ble_pin !== null && d.ble_pin !== '') ? String(d.ble_pin).padStart(6, '0') : '070213';
-  document.getElementById('dashBlePin').innerText = pinFormatted;
+  document.getElementById('dashBlePin').innerText = d.ble_pin || '686868';
 
   if (d.ble_enabled !== false) {
     bBadge.className = 'badge badge-success';
@@ -1162,7 +1161,7 @@ function renderStatus(d) {
   }
 
   if (!document.getElementById('inputBlePin').value && d.ble_pin) {
-    document.getElementById('inputBlePin').value = pinFormatted;
+    document.getElementById('inputBlePin').value = d.ble_pin;
   }
 
   document.getElementById('valHeap').innerText = d.free_heap ? (Math.round(d.free_heap / 1024) + ' KB') : '---';
@@ -1235,6 +1234,16 @@ function updateStatus() {
     .then(function(d) {
       lastStatusData = d;
       renderStatus(d);
+      var clb = document.getElementById("cloudLiveBadge");
+      if (clb) {
+        if (d.online === false) {
+          clb.className = "badge badge-danger";
+          clb.innerText = "☁️ OFFLINE (" + (d.last_sync_ago ? d.last_sync_ago + "s ago" : "No Signal") + ")";
+        } else {
+          clb.className = "badge badge-success";
+          clb.innerText = "☁️ ONLINE (Live)";
+        }
+      }
     })
     .catch(function(err) {
       console.log('Status fetch skipped / local mode:', err);
@@ -1319,7 +1328,7 @@ function toggleBleRadio(cb) {
 
 function saveBlePin() {
   var pin = document.getElementById('inputBlePin').value.trim();
-  if (!/^\d{6}$/.test(pin)) {
+  if (!/^\\d{6}$/.test(pin)) {
     alert(currentLang === 'en' ? 'Bluetooth PIN must be exactly 6 digits (0-9)!' : 'Mã PIN Bluetooth phải gồm đúng 6 chữ số (0-9)!');
     return;
   }
@@ -1370,62 +1379,38 @@ function clearLogs() {
     });
 }
 
-function renderWifiList(networks) {
-  var list = document.getElementById('wifiScanResults');
-  if (!networks || networks.length === 0) {
-    list.innerHTML = '<div style="font-size:11px;color:#9ca3af;text-align:center;padding:12px;">' + (currentLang === 'en' ? 'No Wi-Fi networks found. Click "Rescan".' : 'Chưa tìm thấy mạng Wi-Fi nào. Hãy bấm "Quét lại".') + '</div>';
-    return;
-  }
-  var html = '';
-  for (var i = 0; i < networks.length; i++) {
-    var w = networks[i];
-    if (!w.ssid) continue;
-    html += '<div class="wifi-item" onclick="selectWifi(\'' + encodeURIComponent(w.ssid) + '\')">';
-    html += '  <div>';
-    html += '    <div class="wifi-item-title">' + w.ssid + '</div>';
-    html += '    <div class="wifi-item-sub">' + (currentLang === 'en' ? 'Channel: ' : 'Kênh: ') + w.ch + ' ' + (w.secure ? '🔒' : '🔓') + '</div>';
-    html += '  </div>';
-    html += '  <div class="wifi-item-rssi" style="color:' + (w.rssi > -70 ? '#34d399' : '#f59e0b') + '">' + w.rssi + ' dBm</div>';
-    html += '</div>';
-  }
-  list.innerHTML = html;
-}
-
 function scanWifi(force) {
   if (lastStatusData && (lastStatusData.sta_enabled === false || lastStatusData.connected) && !force) {
     return;
   }
   var btn = document.getElementById('scanBtn');
   var list = document.getElementById('wifiScanResults');
-  btn.innerText = currentLang === 'en' ? 'Scanning...' : 'Đang quét...';
+  btn.innerText = currentLang === 'en' ? 'Scanning...' : 'Đang tải...';
   btn.disabled = true;
 
   var url = force ? '/api/scan?force=1' : '/api/scan';
   fetch(url)
     .then(function(res) { return res.json(); })
     .then(function(networks) {
-      if (!networks || networks.length === 0) {
-        list.innerHTML = '<div style="font-size:11px;color:#38bdf8;text-align:center;padding:12px;">' + 
-          (currentLang === 'en' ? 'Scan command sent to ESP32... Waiting 3.5s for sync.' : 'Đang gửi lệnh quét tới ESP32... Vui lòng đợi ~3-4 giây...') + 
-          '</div>';
-        setTimeout(function() {
-          fetch('/api/scan')
-            .then(function(r) { return r.json(); })
-            .then(function(nets2) {
-              btn.innerText = currentLang === 'en' ? '🔍 Rescan' : '🔍 Quét lại';
-              btn.disabled = false;
-              renderWifiList(nets2);
-            })
-            .catch(function() {
-              btn.innerText = currentLang === 'en' ? '🔍 Rescan' : '🔍 Quét lại';
-              btn.disabled = false;
-            });
-        }, 3500);
-        return;
-      }
       btn.innerText = currentLang === 'en' ? '🔍 Rescan' : '🔍 Quét lại';
       btn.disabled = false;
-      renderWifiList(networks);
+      if (!networks || networks.length === 0) {
+        list.innerHTML = '<div style="font-size:11px;color:#9ca3af;text-align:center;padding:12px;">' + (currentLang === 'en' ? 'No Wi-Fi networks found. Click "Rescan".' : 'Chưa tìm thấy mạng Wi-Fi nào. Hãy bấm "Quét lại".') + '</div>';
+        return;
+      }
+      var html = '';
+      for (var i = 0; i < networks.length; i++) {
+        var w = networks[i];
+        if (!w.ssid) continue;
+        html += '<div class="wifi-item" onclick="selectWifi(\\'' + encodeURIComponent(w.ssid) + '\\')">';
+        html += '  <div>';
+        html += '    <div class="wifi-item-title">' + w.ssid + '</div>';
+        html += '    <div class="wifi-item-sub">' + (currentLang === 'en' ? 'Channel: ' : 'Kênh: ') + w.ch + ' ' + (w.secure ? '🔒' : '🔓') + '</div>';
+        html += '  </div>';
+        html += '  <div class="wifi-item-rssi" style="color:' + (w.rssi > -70 ? '#34d399' : '#f59e0b') + '">' + w.rssi + ' dBm</div>';
+        html += '</div>';
+      }
+      list.innerHTML = html;
     })
     .catch(function(err) {
       btn.innerText = currentLang === 'en' ? '🔍 Rescan' : '🔍 Quét lại';
@@ -1574,8 +1559,8 @@ function checkGithubOta() {
 
               if (!res.has_update) {
                 alert(currentLang === 'en' 
-                  ? ('Device is running latest version (' + res.current_ver + ')!\nNo update available on GitHub.')
-                  : ('Thiết bị đang chạy phiên bản mới nhất (' + res.current_ver + ')!\nKhông có bản cập nhật mới trên GitHub.'));
+                  ? ('Device is running latest version (' + res.current_ver + ')!\\nNo update available on GitHub.')
+                  : ('Thiết bị đang chạy phiên bản mới nhất (' + res.current_ver + ')!\\nKhông có bản cập nhật mới trên GitHub.'));
                 resultBox.classList.add('hidden');
                 return;
               }
@@ -1606,8 +1591,8 @@ function startGithubOta() {
     return;
   }
   var confirmMsg = currentLang === 'en'
-    ? 'CONFIRM FIRMWARE UPGRADE:\n\nESP32 will download firmware from GitHub and flash it into memory.\nProcess takes 30 - 60 seconds.\nDo NOT power off the device!\n\nProceed now?'
-    : 'XÁC NHẬN NÂNG CẤP FIRMWARE:\n\nESP32 sẽ tải file từ GitHub và ghi đè vào phân vùng Flash.\nQuá trình này mất khoảng 30 - 60 giây.\nKhông được tắt nguồn thiết bị!\n\nBạn có muốn bắt đầu không?';
+    ? 'CONFIRM FIRMWARE UPGRADE:\\n\\nESP32 will download firmware from GitHub and flash it into memory.\\nProcess takes 30 - 60 seconds.\\nDo NOT power off the device!\\n\\nProceed now?'
+    : 'XÁC NHẬN NÂNG CẤP FIRMWARE:\\n\\nESP32 sẽ tải file từ GitHub và ghi đè vào phân vùng Flash.\\nQuá trình này mất khoảng 30 - 60 giây.\\nKhông được tắt nguồn thiết bị!\\n\\nBạn có muốn bắt đầu không?';
     
   if (!confirm(confirmMsg)) {
     return;
@@ -1737,7 +1722,7 @@ function loadProfileToForm(silent) {
   document.getElementById('dhcpStartInput').value = p.dhcp_start || '10.51.28.10';
   document.getElementById('dhcpEndInput').value = p.dhcp_end || '10.51.28.200';
   if (!silent) {
-    alert((currentLang === 'en' ? 'Loaded parameters from preset "' : 'Đã nạp toàn bộ thông số của mẫu "') + p.name + '"!\n' + 
+    alert((currentLang === 'en' ? 'Loaded parameters from preset "' : 'Đã nạp toàn bộ thông số của mẫu "') + p.name + '"!\\n' + 
           (currentLang === 'en' ? 'You can edit below and click "Save Update" to update this preset.' : 'Bạn có thể chỉnh sửa bên dưới rồi bấm "Lưu Cập Nhật" để lưu lại vào mẫu này.'));
   }
 }
@@ -1749,8 +1734,8 @@ function applySelectedProfile() {
     return;
   }
   var confirmMsg = currentLang === 'en'
-    ? 'Are you sure you want to activate preset "' + p.name + '"?\nESP32 will apply parameters and reboot SoftAP now.'
-    : 'Bạn có chắc muốn kích hoạt mẫu "' + p.name + '"?\nESP32 sẽ áp dụng ngay và khởi động lại cổng phát AP.';
+    ? 'Are you sure you want to activate preset "' + p.name + '"?\\nESP32 will apply parameters and reboot SoftAP now.'
+    : 'Bạn có chắc muốn kích hoạt mẫu "' + p.name + '"?\\nESP32 sẽ áp dụng ngay và khởi động lại cổng phát AP.';
   if (!confirm(confirmMsg)) {
     return;
   }
@@ -1863,15 +1848,15 @@ function saveCurrentAsNewProfile() {
 // Tính năng mới: Sao chép cấu hình Wi-Fi nguồn thành Preset AP
 function cloneStaToPreset() {
   var confirmMsg = currentLang === 'en'
-    ? 'Do you want to clone the current Source Wi-Fi into a new SoftAP Preset?\n\n' +
-      '• SSID & Password from Source Wi-Fi\n' +
-      '• Router BSSID (Hardware MAC)\n' +
-      '• Gateway IP & Subnet Mask\n' +
+    ? 'Do you want to clone the current Source Wi-Fi into a new SoftAP Preset?\\n\\n' +
+      '• SSID & Password from Source Wi-Fi\\n' +
+      '• Router BSSID (Hardware MAC)\\n' +
+      '• Gateway IP & Subnet Mask\\n' +
       '• DHCP IP Pool configured matching Source IP scheme'
-    : 'Bạn có muốn sao chép cấu hình Wi-Fi nguồn hiện tại thành 1 Preset Mạng Phát mới không?\n\n' +
-      '• Tên Wi-Fi (SSID) & Mật khẩu từ Wi-Fi nguồn\n' +
-      '• Địa chỉ MAC phần cứng (BSSID của Router nguồn)\n' +
-      '• IP Gateway & Subnet Mask tương ứng\n' +
+    : 'Bạn có muốn sao chép cấu hình Wi-Fi nguồn hiện tại thành 1 Preset Mạng Phát mới không?\\n\\n' +
+      '• Tên Wi-Fi (SSID) & Mật khẩu từ Wi-Fi nguồn\\n' +
+      '• Địa chỉ MAC phần cứng (BSSID của Router nguồn)\\n' +
+      '• IP Gateway & Subnet Mask tương ứng\\n' +
       '• Dải cấp IP DHCP tự động tính theo quy tắc IP nguồn (.10 ➔ .200)';
   if (!confirm(confirmMsg)) return;
 
@@ -1883,19 +1868,19 @@ function cloneStaToPreset() {
         return;
       }
       var successMsg = currentLang === 'en'
-        ? ('🎉 Successfully cloned Source Wi-Fi to SoftAP Preset!\n\n' +
-           '• Preset Name: ' + d.name + '\n' +
-           '• SSID: ' + d.ssid + '\n' +
-           '• BSSID (MAC): ' + d.bssid + '\n' +
-           '• Gateway IP: ' + d.ip + '\n' +
-           '• Subnet Mask: ' + d.subnet + '\n' +
+        ? ('🎉 Successfully cloned Source Wi-Fi to SoftAP Preset!\\n\\n' +
+           '• Preset Name: ' + d.name + '\\n' +
+           '• SSID: ' + d.ssid + '\\n' +
+           '• BSSID (MAC): ' + d.bssid + '\\n' +
+           '• Gateway IP: ' + d.ip + '\\n' +
+           '• Subnet Mask: ' + d.subnet + '\\n' +
            '• DHCP Pool: ' + d.dhcp_start + ' ➔ ' + d.dhcp_end)
-        : ('🎉 Đã sao chép cấu hình Wi-Fi nguồn thành Preset thành công!\n\n' +
-           '• Tên mẫu: ' + d.name + '\n' +
-           '• Tên Wi-Fi: ' + d.ssid + '\n' +
-           '• Địa chỉ BSSID (MAC): ' + d.bssid + '\n' +
-           '• Gateway IP: ' + d.ip + '\n' +
-           '• Subnet Mask: ' + d.subnet + '\n' +
+        : ('🎉 Đã sao chép cấu hình Wi-Fi nguồn thành Preset thành công!\\n\\n' +
+           '• Tên mẫu: ' + d.name + '\\n' +
+           '• Tên Wi-Fi: ' + d.ssid + '\\n' +
+           '• Địa chỉ BSSID (MAC): ' + d.bssid + '\\n' +
+           '• Gateway IP: ' + d.ip + '\\n' +
+           '• Subnet Mask: ' + d.subnet + '\\n' +
            '• Dải DHCP ngẫu nhiên: ' + d.dhcp_start + ' ➔ ' + d.dhcp_end);
       alert(successMsg);
 
@@ -1922,17 +1907,17 @@ function cloneStaToPreset() {
       document.getElementById('dhcpEndInput').value = dEnd;
 
       var fallbackMsg = currentLang === 'en'
-        ? ('🎉 Cloned Source Wi-Fi parameters directly to SoftAP Form!\n\n' +
-           '• SSID: ' + sSsid + '\n' +
-           '• BSSID: ' + sBssid + '\n' +
-           '• Gateway: ' + sGw + '\n' +
-           '• Subnet: ' + sSub + '\n' +
+        ? ('🎉 Cloned Source Wi-Fi parameters directly to SoftAP Form!\\n\\n' +
+           '• SSID: ' + sSsid + '\\n' +
+           '• BSSID: ' + sBssid + '\\n' +
+           '• Gateway: ' + sGw + '\\n' +
+           '• Subnet: ' + sSub + '\\n' +
            '• DHCP: ' + dStart + ' ➔ ' + dEnd)
-        : ('🎉 Đã sao chép toàn bộ thông số Wi-Fi nguồn vào Form Mạng Phát!\n\n' +
-           '• SSID: ' + sSsid + '\n' +
-           '• BSSID: ' + sBssid + '\n' +
-           '• Gateway: ' + sGw + '\n' +
-           '• Subnet: ' + sSub + '\n' +
+        : ('🎉 Đã sao chép toàn bộ thông số Wi-Fi nguồn vào Form Mạng Phát!\\n\\n' +
+           '• SSID: ' + sSsid + '\\n' +
+           '• BSSID: ' + sBssid + '\\n' +
+           '• Gateway: ' + sGw + '\\n' +
+           '• Subnet: ' + sSub + '\\n' +
            '• Dải DHCP: ' + dStart + ' ➔ ' + dEnd);
       alert(fallbackMsg);
       showTab(3);
@@ -1962,8 +1947,8 @@ function autoSelectChannel() {
       }
       if (d.success) {
         var msg = currentLang === 'en'
-          ? ('⚡ Optimal Channel Scan Result:\nChannel ' + d.channel + ' has the lowest interference!\n\n(Channel 0 is active - ESP32 will auto-broadcast on the best channel upon save & restart)')
-          : ('⚡ Kết quả quét kênh tối ưu:\nKênh ' + d.channel + ' ít nhiễu và thông thoáng nhất!\n\n(Kênh 0 đang được chọn - ESP32 sẽ tự động phát trên kênh tối ưu này khi lưu & khởi động lại)');
+          ? ('⚡ Optimal Channel Scan Result:\\nChannel ' + d.channel + ' has the lowest interference!\\n\\n(Channel 0 is active - ESP32 will auto-broadcast on the best channel upon save & restart)')
+          : ('⚡ Kết quả quét kênh tối ưu:\\nKênh ' + d.channel + ' ít nhiễu và thông thoáng nhất!\\n\\n(Kênh 0 đang được chọn - ESP32 sẽ tự động phát trên kênh tối ưu này khi lưu & khởi động lại)');
         alert(msg);
       } else {
         alert(currentLang === 'en' ? 'Unable to scan auto channel!' : 'Không thể quét kênh tự động!');
@@ -2035,12 +2020,6 @@ export default {
         }
         if (body.logs && Array.isArray(body.logs)) {
           recentLogs = body.logs;
-        }
-        if (body.scan_results && Array.isArray(body.scan_results)) {
-          deviceStatus.scan_results = body.scan_results;
-        }
-        if (body.ble_pin) {
-          deviceStatus.ble_pin = String(body.ble_pin).padStart(6, '0');
         }
         lastSyncTime = Date.now();
 
@@ -2308,12 +2287,11 @@ export default {
     if (url.pathname === "/api/save_ble" && request.method === "POST") {
       const b = await parseBody(request);
       if (b.pin && b.pin.length === 6) {
-        const pin6 = String(b.pin).padStart(6, '0');
-        pendingCommands.push(`SETPIN:${pin6}`);
-        deviceStatus.ble_pin = pin6;
+        pendingCommands.push(`SETPIN:${b.pin}`);
+        deviceStatus.ble_pin = b.pin;
         return new Response(JSON.stringify({ 
           success: true, 
-          msg: `Đã gửi lệnh đổi mã PIN Bluetooth (${pin6}) tới ESP32!` 
+          msg: `Đã gửi lệnh đổi mã PIN Bluetooth (${b.pin}) tới ESP32!` 
         }), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
       }
       if (b.enabled !== undefined) {

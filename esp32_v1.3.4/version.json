@@ -1,0 +1,5 @@
+{
+  "version": "1.3.4",
+  "url": "https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/esp32_v1.3.4.ino.bin",
+  "changelog": "Bản phát hành v1.3.4: Sửa triệt để mất kết nối Internet khi kết nối Wi-Fi nguồn (kích hoạt NAPT trực tiếp); sửa mất Internet ở chế độ 5G (đưa Default Gateway về 0.0.0.0 để điện thoại dùng 5G); sửa giao diện Cloud Remote không bấm được nút (khớp 100% tham số API form và nới lỏng SameSite Cookie); mặc định bật Cloudflare Relay URL kết nối tự động."
+}

@@ -1,0 +1,5 @@
+{
+  "version": "1.3.3",
+  "url": "https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/esp32_v1.3.3.ino.bin",
+  "changelog": "Bản phát hành v1.3.3: Sửa triệt để lỗi văng kết nối Wi-Fi AP sau khi khởi động/nâng cấp; chuẩn hóa Option 3 Router và Option 6 DNS khi chưa có Wi-Fi nguồn; tắt Modem Sleep (WIFI_PS_NONE) giữ sóng AP ổn định 100%; giữ nguyên cấu hình STA khi update; chống reset pool DHCP khi đang có thiết bị kết nối."
+}

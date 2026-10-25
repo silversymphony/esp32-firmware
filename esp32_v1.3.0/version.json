@@ -1,0 +1,5 @@
+{
+  "version": "1.3.0",
+  "url": "https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/esp32-firmware.bin",
+  "changelog": "Bản phát hành v1.3.0: Bổ sung tính năng Quản lý từ xa qua Internet (Cloud Remote Relay). Tích hợp kết nối Outbound HTTPS tới Cloudflare Worker, vượt mọi rào cản NAT/CGNAT/Firewall. Cho phép giám sát thông số thời gian thực và gửi lệnh điều khiển cấu hình ESP32 từ bất kỳ đâu trên thế giới qua trình duyệt điện thoại/máy tính."
+}

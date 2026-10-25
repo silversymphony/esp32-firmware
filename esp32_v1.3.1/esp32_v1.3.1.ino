@@ -16,18 +16,6 @@ extern "C" {
 #ifndef ESP_NETIF_REQUESTED_IP_ADDRESS
 #define ESP_NETIF_REQUESTED_IP_ADDRESS ((esp_netif_dhcp_option_id_t)50)
 #endif
-#ifndef ESP_NETIF_ROUTER_SOLICITATION_ADDRESS
-#define ESP_NETIF_ROUTER_SOLICITATION_ADDRESS ((esp_netif_dhcp_option_id_t)32)
-#endif
-#ifndef ESP_NETIF_DOMAIN_NAME_SERVER
-#define ESP_NETIF_DOMAIN_NAME_SERVER ((esp_netif_dhcp_option_id_t)6)
-#endif
-#ifndef OFFER_ROUTER
-#define OFFER_ROUTER 0x01
-#endif
-#ifndef OFFER_DNS
-#define OFFER_DNS 0x02
-#endif
 
 #if __has_include(<esp_arduino_version.h>)
 #include <esp_arduino_version.h>
@@ -45,10 +33,11 @@ extern "C" {
 #include "lwip/lwip_napt.h"
 #elif __has_include("lwip/napt.h")
 #include "lwip/napt.h"
-#endif
+#else
 extern "C" {
   void ip_napt_enable(uint32_t addr, int enable);
 }
+#endif
 
 #include <lwip/ip_addr.h>
 #include <lwip/ip4_addr.h>
@@ -56,7 +45,6 @@ extern "C" {
 #include <lwip/tcpip.h>
 #include <WiFiUdp.h>
 #include <Update.h>
-#include <ESPmDNS.h>
 
 // Nhúng thư viện nâng cấp Firmware không dây qua GitHub HTTPS (OTA)
 #include <WiFiClientSecure.h>
@@ -69,7 +57,7 @@ extern "C" {
 Preferences prefs;
 
 // Phiên bản Firmware & Quản trị GitHub OTA
-const String FIRMWARE_VERSION = "1.3.5";
+const String FIRMWARE_VERSION = "1.3.1";
 String ota_version_url;
 bool pending_ota = false;
 String pending_ota_bin_url = "";
@@ -91,9 +79,6 @@ String ota_err_msg = "";
 bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &errMsg);
 void performGithubOta(const String &binUrl);
 bool parse_mac(const String &macStr, uint8_t *macArr);
-void configureSoftApDhcp(bool randomizePool = false);
-String serializeLogsJson();
-String performWifiScanJson();
 
 // Quản lý mẫu cấu hình mạng phát (SoftAP Presets)
 #define MAX_PROFILES 10
@@ -142,7 +127,7 @@ bool tx_power_boost = false;
 
 // Quản lý bảo mật Bluetooth LE
 bool ble_enabled = true;
-uint32_t ble_pin = 70213; // Mã PIN mặc định: 070213
+uint32_t ble_pin = 686868;
 
 // Web Server & Captive DNS Server
 WebServer server(80);
@@ -162,6 +147,14 @@ unsigned long reboot_time = 0;
 unsigned long last_sta_check = 0;
 volatile bool dhcp_reconfigure_needed = false;
 
+// Quản lý kết nối từ xa qua Internet (Cloud Remote Access)
+bool cloud_enabled = false;
+String cloud_url = "";
+String cloud_key = "686868";
+bool cloud_online = false;
+unsigned long last_cloud_sync = 0;
+void syncWithCloudServer();
+
 // =========================================================================
 //      BLUETOOTH LOW ENERGY (BLE) - NORDIC UART SERVICE (CONSOLE & CONFIG)
 // =========================================================================
@@ -180,7 +173,7 @@ String pending_ble_cmd = "";
 // =========================================================================
 //              HỆ THỐNG GHI NHẬT KÝ KHÔNG DÂY (LOG BUFFER)
 // =========================================================================
-#define LOG_BUFFER_SIZE 120
+#define LOG_BUFFER_SIZE 35
 String logBuffer[LOG_BUFFER_SIZE];
 int logHead = 0;
 int logCount = 0;
@@ -285,20 +278,6 @@ void setBleRadio(bool enable) {
 void sendResponse(const String &msg) {
   Serial.println(msg);
 
-  // Đồng bộ toàn bộ phản hồi vào Web Portal Log Buffer (tách theo từng dòng)
-  int sIdx = 0;
-  int mLen = msg.length();
-  while (sIdx < mLen) {
-    int nl = msg.indexOf('\n', sIdx);
-    String l = (nl >= 0) ? msg.substring(sIdx, nl) : msg.substring(sIdx);
-    l.trim();
-    if (l.length() > 0) {
-      addLogToBuffer(l);
-    }
-    if (nl >= 0) sIdx = nl + 1;
-    else break;
-  }
-
   if (!bleConnected || pBleTxChar == NULL) return;
 
   String text = msg;
@@ -365,13 +344,17 @@ void handleBleCommand(String cmd) {
     h += "• DHCP:start,end    -> Doi dai cap IP ngau nhien (VD: DHCP:10.51.28.10,10.51.28.200)\n";
     h += "• BOOST:ON | OFF    -> Bat/tat phat song cuc dai 20 dBm (~100mW)\n";
     h += "\n-- [3. Bao Mat & Bluetooth] --\n";
-    h += "• SETPIN:pin_6_so   -> Doi ma PIN ghep doi Bluetooth (VD: SETPIN:070213)\n";
+    h += "• SETPIN:pin_6_so   -> Doi ma PIN ghep doi Bluetooth (VD: SETPIN:686868)\n";
     h += "• BLERADIO:OFF      -> Tat song Bluetooth LE (tang hinh)\n";
     h += "\n-- [4. Cloud OTA GitHub] --\n";
     h += "• OTAURL:url        -> Cai dat duong dan version.json\n";
     h += "• OTA               -> Kiem tra ban cap nhat moi tu GitHub\n";
     h += "• OTA:RUN           -> Tai va ghi Flash ban moi tu GitHub\n";
-    h += "\n-- [5. He Thong & Truy Cap Truc Tiep] --\n";
+    h += "\n-- [5. Quan Ly Tu Xa Cloud] --\n";
+    h += "• CLOUD:ON | OFF    -> Bat/Tat quan ly tu xa qua Internet\n";
+    h += "• CLOUD:CONFIG:url,key -> Cai dat Cloudflare Worker URL & Key\n";
+    h += "• CLOUD:STATUS      -> Xem trang thai ket noi Cloud Remote\n";
+    h += "\n-- [6. He Thong] --\n";
     h += "• STATUS            -> Xem toan bo trang thai he thong & IP\n";
     h += "• CLEARLOGS         -> Xoa bo nho dem nhat ky (log buffer)\n";
     h += "• REBOOT            -> Khoi dong lai ESP32";
@@ -385,17 +368,13 @@ void handleBleCommand(String cmd) {
     sprintf(pinStr, "%06u", ble_pin);
     String st = "=== TRANG THAI ESP32 GATEWAY ===\n";
     st += "Firmware: v" + FIRMWARE_VERSION + "\n";
-    if (!sta_enabled) {
-      st += "STA Status: DA TAT (Che do Mang noi bo - Dien thoai dung 5G)\n";
-    } else {
-      st += "STA SSID: " + (sta_ssid.length() > 0 ? sta_ssid : "(Chua cau hinh)") + "\n";
-      st += "STA Pass: " + (sta_password.length() > 0 ? sta_password : "(Khong co mat khau)") + "\n";
-      st += "STA Status: " + String(WiFi.status() == WL_CONNECTED ? "DA KET NOI" : "CHUA KET NOI") + "\n";
-      if (WiFi.status() == WL_CONNECTED) {
-        st += "STA IP: " + WiFi.localIP().toString() + "\n";
-        st += "STA Gateway: " + WiFi.gatewayIP().toString() + "\n";
-        st += "STA RSSI: " + String(WiFi.RSSI()) + " dBm\n";
-      }
+    st += "STA SSID: " + (sta_ssid.length() > 0 ? sta_ssid : "(Chua cau hinh)") + "\n";
+    st += "STA Pass: " + (sta_password.length() > 0 ? sta_password : "(Khong co mat khau)") + "\n";
+    st += "STA Status: " + String(WiFi.status() == WL_CONNECTED ? "DA KET NOI" : "CHUA KET NOI") + "\n";
+    if (WiFi.status() == WL_CONNECTED) {
+      st += "STA IP: " + WiFi.localIP().toString() + "\n";
+      st += "STA Gateway: " + WiFi.gatewayIP().toString() + "\n";
+      st += "STA RSSI: " + String(WiFi.RSSI()) + " dBm\n";
     }
     st += "-------------------------------\n";
     st += "AP SSID: " + ap_ssid + "\n";
@@ -411,11 +390,6 @@ void handleBleCommand(String cmd) {
     st += "BLE PIN: " + String(pinStr) + " | Radio: " + (ble_enabled ? "BAT" : "TAT") + "\n";
     st += "OTA URL: " + ota_version_url + "\n";
     st += "NAT Routing: " + String(napt_enabled ? "ON" : "OFF") + "\n";
-    st += "Truy cap SoftAP: http://" + ap_ip_str + "/\n";
-    if (WiFi.status() == WL_CONNECTED) {
-      st += "Truy cap LAN: http://" + WiFi.localIP().toString() + "/\n";
-    }
-    st += "Truy cap mDNS: http://esp32.local/\n";
     st += "RAM Free: " + String(ESP.getFreeHeap() / 1024) + " KB\n";
     st += "Flash Chip: " + String(ESP.getFlashChipSize() / (1024 * 1024)) + " MB\n";
     st += "Uptime: " + String(millis() / 1000) + "s";
@@ -426,8 +400,17 @@ void handleBleCommand(String cmd) {
   // 3. SCAN: Quét sóng Wi-Fi xung quanh
   if (cmd.equalsIgnoreCase("SCAN") || cmd.equalsIgnoreCase("scan")) {
     sendResponse("[SCAN] Dang quet cac mang Wi-Fi 2.4GHz xung quanh...");
-    performWifiScanJson();
-    sendResponse("[SCAN] Quet xong! Da cap nhat danh sach Wi-Fi.");
+    int n = WiFi.scanNetworks(false, false, false, 50);
+    if (n == 0) {
+      sendResponse("[SCAN] Khong tim thay mang Wi-Fi nao xung quanh.");
+    } else {
+      String out = "=== TIM THAY " + String(n) + " MANG WI-FI ===\n";
+      for (int i = 0; i < n; i++) {
+        out += String(i + 1) + ". " + WiFi.SSID(i) + " (" + String(WiFi.RSSI(i)) + " dBm) Ch:" + String(WiFi.channel(i)) + (WiFi.encryptionType(i) != WIFI_AUTH_OPEN ? " [Lock]" : " [Open]") + "\n";
+      }
+      sendResponse(out);
+    }
+    WiFi.scanDelete();
     return;
   }
 
@@ -490,8 +473,6 @@ void handleBleCommand(String cmd) {
     disableNapt();
     stopCaptiveDns();
     configureSoftApDhcp();
-    delay(50);
-    esp_wifi_deauth_sta(0);
     sendResponse("[OK] Da TAT Wi-Fi nguon! ESP32 chuyen sang che do MANG NOI BO OFFLINE. Dien thoai ket noi vao se giu nguyen 5G de truy cap Internet.");
     return;
   }
@@ -898,7 +879,57 @@ void handleBleCommand(String cmd) {
     return;
   }
 
-  // 17. REBOOT: Khởi động lại thiết bị
+  // 17. CLOUD: Quản lý từ xa qua Internet (Cloud Remote)
+  if (cmd.equalsIgnoreCase("CLOUD:ON") || cmd.equalsIgnoreCase("cloud:on")) {
+    cloud_enabled = true;
+    prefs.begin("gateway", false);
+    prefs.putBool("cloud_en", true);
+    prefs.end();
+    sendResponse("[OK] Da BAT quan ly tu xa qua Internet. ESP32 se dong bo toi: " + (cloud_url.length() > 0 ? cloud_url : "(Chua cau hinh URL)"));
+    return;
+  }
+
+  if (cmd.equalsIgnoreCase("CLOUD:OFF") || cmd.equalsIgnoreCase("cloud:off")) {
+    cloud_enabled = false;
+    cloud_online = false;
+    prefs.begin("gateway", false);
+    prefs.putBool("cloud_en", false);
+    prefs.end();
+    sendResponse("[OK] Da TAT quan ly tu xa qua Internet.");
+    return;
+  }
+
+  if (cmd.startsWith("CLOUD:CONFIG:") || cmd.startsWith("cloud:config:")) {
+    String payload = cmd.substring(13); payload.trim();
+    int comma = payload.indexOf(',');
+    if (comma >= 0) {
+      cloud_url = payload.substring(0, comma);
+      cloud_key = payload.substring(comma + 1);
+      cloud_url.trim(); cloud_key.trim();
+      cloud_enabled = true;
+      prefs.begin("gateway", false);
+      prefs.putBool("cloud_en", true);
+      prefs.putString("cloud_url", cloud_url);
+      prefs.putString("cloud_key", cloud_key);
+      prefs.end();
+      sendResponse("[OK] Da luu Cloud URL='" + cloud_url + "' & Key='" + cloud_key + "'. Da BAT ket noi Cloud!");
+    } else {
+      sendResponse("[ERROR] Cu phap sai! Hay dung: CLOUD:CONFIG:https://my-worker.workers.dev,SecretKey");
+    }
+    return;
+  }
+
+  if (cmd.equalsIgnoreCase("CLOUD:STATUS") || cmd.equalsIgnoreCase("cloud:status")) {
+    String s = "=== TRANG THAI CLOUD REMOTE ===\n";
+    s += "Enabled: " + String(cloud_enabled ? "BAT" : "TAT") + "\n";
+    s += "Status: " + String(cloud_online ? "ONLINE (Ket noi on dinh)" : "OFFLINE") + "\n";
+    s += "URL: " + (cloud_url.length() > 0 ? cloud_url : "(Chua cau hinh)") + "\n";
+    s += "Key: " + cloud_key;
+    sendResponse(s);
+    return;
+  }
+
+  // 18. REBOOT: Khởi động lại thiết bị
   if (cmd.equalsIgnoreCase("REBOOT") || cmd.equalsIgnoreCase("reboot")) {
     sendResponse("[OK] ESP32 se khoi dong lai sau 1 giay...");
     delay(500);
@@ -953,7 +984,7 @@ class BleRxCallbacks : public NimBLECharacteristicCallbacks {
 void initBleServer() {
   NimBLEDevice::init(BLE_DEVICE_NAME);
 
-  // Thiết lập bảo mật phần cứng (Passkey 070213 & Bonding)
+  // Thiết lập bảo mật phần cứng (Passkey 686868 & Bonding)
   configureBleSecurity();
 
   pBleServer = NimBLEDevice::createServer();
@@ -1318,20 +1349,16 @@ bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &e
 
   logPrintf("[OTA] Dang kiem tra version tu: %s", ota_version_url.c_str());
 
-  // Đảm bảo DNS 8.8.8.8 và 1.1.1.1 để phân giải domain GitHub không bị chặn bởi modem nhà mạng
-  ip_addr_t dns1, dns2;
-  IP_ADDR4(&dns1, 8, 8, 8, 8);
-  IP_ADDR4(&dns2, 1, 1, 1, 1);
-  dns_setserver(0, &dns1);
-  dns_setserver(1, &dns2);
-
   WiFiClientSecure client;
   client.setInsecure(); // Kết nối GitHub HTTPS không cần nạp CA root certificate
-  client.setTimeout(15000); // 15 giây (khắc phục lỗi 8ms gây timeout bắt tay SSL)
+#if !defined(ESP_ARDUINO_VERSION_MAJOR) || (ESP_ARDUINO_VERSION_MAJOR < 3)
+  client.setBufferSizes(2048, 512); // Tối ưu RAM cho mbedTLS trên ESP32 Core 2.x
+#endif
+  client.setTimeout(8);
 
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setTimeout(15000);
+  http.setTimeout(8000);
 
   if (!http.begin(client, ota_version_url)) {
     client.stop();
@@ -1364,27 +1391,23 @@ bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &e
   return true;
 }
 
-// Tải file firmware .bin (esp32_v<version>.ino.bin) từ GitHub và nạp vào phân vùng OTA của bộ nhớ Flash
+// Tải file esp32-firmware.bin từ GitHub và nạp vào phân vùng OTA của bộ nhớ Flash
 void performGithubOta(const String &binUrl) {
   logPrintf("[OTA] Bat dau tai firmware va ghi Flash tu: %s", binUrl.c_str());
 
-  // Đảm bảo DNS 8.8.8.8 và 1.1.1.1
-  ip_addr_t dns1, dns2;
-  IP_ADDR4(&dns1, 8, 8, 8, 8);
-  IP_ADDR4(&dns2, 1, 1, 1, 1);
-  dns_setserver(0, &dns1);
-  dns_setserver(1, &dns2);
-
   WiFiClientSecure client;
   client.setInsecure();
-  client.setTimeout(30000);
+#if !defined(ESP_ARDUINO_VERSION_MAJOR) || (ESP_ARDUINO_VERSION_MAJOR < 3)
+  client.setBufferSizes(4096, 1024); // Tối ưu RAM cho mbedTLS trên ESP32 Core 2.x
+#endif
 
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setTimeout(30000);
+  http.setTimeout(25000);
 
   if (!http.begin(client, binUrl)) {
     logMessage("[OTA-LOI] Khong the khoi tao ket noi HTTPS den GitHub!");
+    client.stop();
     return;
   }
 
@@ -1396,7 +1419,7 @@ void performGithubOta(const String &binUrl) {
     logPrintf("[OTA] Kich thuoc Firmware: %d bytes (%.2f MB)", contentLength, (float)contentLength / (1024.0 * 1024.0));
 
     if (contentLength <= 0) {
-      logMessage("[OTA-LOI] Khong xac dinh duoc kich thuoc file (Content-Length <= 0)!");
+      logMessage("[OTA-LOI] Khong xac dinh duoc kich thuoc file (Content-Length = 0)!");
       http.end();
       return;
     }
@@ -1407,17 +1430,32 @@ void performGithubOta(const String &binUrl) {
       return;
     }
 
-    Update.onProgress([](size_t cur, size_t total) {
-      static int prevPercent = -1;
-      int percent = (cur * 100) / total;
-      if (percent != prevPercent && (percent % 10 == 0 || percent == 100)) {
-        prevPercent = percent;
-        logPrintf("[OTA] Ghi Flash: %d%% (%u / %u bytes)", percent, cur, total);
-      }
-    });
-
     WiFiClient *stream = http.getStreamPtr();
-    size_t written = Update.writeStream(*stream);
+    size_t written = 0;
+    int prevPercent = -1;
+    uint8_t buff[1024];
+
+    while (http.connected() && (written < (size_t)contentLength)) {
+      size_t avail = stream->available();
+      if (avail > 0) {
+        int bytesToRead = avail > sizeof(buff) ? sizeof(buff) : avail;
+        if (bytesToRead > (int)(contentLength - written)) {
+          bytesToRead = contentLength - written;
+        }
+        int readBytes = stream->readBytes(buff, bytesToRead);
+        if (readBytes > 0) {
+          Update.write(buff, readBytes);
+          written += readBytes;
+          int percent = (written * 100) / contentLength;
+          if (percent != prevPercent && (percent % 10 == 0 || percent == 100)) {
+            prevPercent = percent;
+            logPrintf("[OTA] Ghi Flash: %d%% (%d / %d bytes)", percent, (int)written, contentLength);
+          }
+        }
+      } else {
+        delay(10);
+      }
+    }
 
     if (Update.end()) {
       if (Update.isFinished()) {
@@ -1425,7 +1463,7 @@ void performGithubOta(const String &binUrl) {
         delay(1000);
         ESP.restart();
       } else {
-        logPrintf("[OTA-LOI] Ghi Flash chua hoan tat day du! Da ghi: %u / %d bytes", written, contentLength);
+        logMessage("[OTA-LOI] Qua trinh ghi Flash chua hoan tat day du!");
       }
     } else {
       logPrintf("[OTA-LOI] Loi ket thuc Update (Ma loi: %d)", Update.getError());
@@ -1434,6 +1472,100 @@ void performGithubOta(const String &binUrl) {
     logPrintf("[OTA-LOI] May chu GitHub tra ve ma loi: %d", httpCode);
   }
   http.end();
+  client.stop();
+}
+
+// Đồng bộ hai chiều với Cloudflare Worker qua HTTPS (Gửi trạng thái & nhận lệnh từ xa)
+void syncWithCloudServer() {
+  if (!cloud_enabled || cloud_url.length() < 8 || WiFi.status() != WL_CONNECTED) {
+    cloud_online = false;
+    return;
+  }
+
+  // Giới hạn tần suất đồng bộ mỗi 2.5 giây để tránh nghẽn mạng
+  if (millis() - last_cloud_sync < 2500) {
+    return;
+  }
+  last_cloud_sync = millis();
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  #if !defined(ESP_ARDUINO_VERSION_MAJOR) || (ESP_ARDUINO_VERSION_MAJOR < 3)
+  client.setBufferSizes(2048, 512);
+  #endif
+
+  HTTPClient http;
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setTimeout(4000);
+
+  String syncUrl = cloud_url;
+  if (!syncUrl.endsWith("/")) syncUrl += "/";
+  syncUrl += "api/sync";
+
+  if (!http.begin(client, syncUrl)) {
+    cloud_online = false;
+    return;
+  }
+
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-ESP32-Key", cloud_key);
+
+  String payload = "{";
+  payload += "\"sta_ssid\":\"" + sta_ssid + "\",";
+  payload += "\"sta_ip\":\"" + WiFi.localIP().toString() + "\",";
+  payload += "\"sta_rssi\":" + String(WiFi.RSSI()) + ",";
+  payload += "\"sta_enabled\":" + String(sta_enabled ? "true" : "false") + ",";
+  payload += "\"ap_ssid\":\"" + ap_ssid + "\",";
+  payload += "\"ap_pass\":\"" + ap_password + "\",";
+  payload += "\"ap_channel\":" + String(ap_channel) + ",";
+  payload += "\"effective_channel\":" + String(current_effective_channel) + ",";
+  payload += "\"ap_ip\":\"" + ap_ip_str + "\",";
+  payload += "\"ap_subnet\":\"" + ap_subnet_str + "\",";
+  payload += "\"dhcp_start\":\"" + dhcp_start_str + "\",";
+  payload += "\"dhcp_end\":\"" + dhcp_end_str + "\",";
+  payload += "\"tx_boost\":" + String(tx_power_boost ? "true" : "false") + ",";
+  payload += "\"ble_enabled\":" + String(ble_enabled ? "true" : "false") + ",";
+  payload += "\"napt\":" + String(napt_enabled ? "true" : "false") + ",";
+  payload += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
+  payload += "\"uptime\":" + String(millis() / 1000) + ",";
+  payload += "\"fw_ver\":\"" + FIRMWARE_VERSION + "\"";
+  payload += "}";
+
+  int httpCode = http.POST(payload);
+  if (httpCode == HTTP_CODE_OK) {
+    cloud_online = true;
+    String resp = http.getString();
+    http.end();
+
+    // Xử lý các lệnh điều khiển từ xa do Cloudflare Worker chuyển về
+    int cmdIdx = resp.indexOf("\"commands\":[");
+    if (cmdIdx >= 0) {
+      int endBracket = resp.indexOf("]", cmdIdx);
+      if (endBracket > cmdIdx + 12) {
+        String cmdsStr = resp.substring(cmdIdx + 11, endBracket + 1);
+        int cur = 0;
+        while (cur < cmdsStr.length()) {
+          int q1 = cmdsStr.indexOf('\"', cur);
+          if (q1 < 0) break;
+          int q2 = cmdsStr.indexOf('\"', q1 + 1);
+          if (q2 < 0) break;
+          String cmd = cmdsStr.substring(q1 + 1, q2);
+          cmd.trim();
+          if (cmd.length() > 0) {
+            logPrintf("[CLOUD-RX] Nhan lenh tu xa: '%s'", cmd.c_str());
+            handleBleCommand(cmd);
+          }
+          cur = q2 + 1;
+        }
+      }
+    }
+    http.end();
+    client.stop();
+  } else {
+    cloud_online = false;
+    http.end();
+    client.stop();
+  }
 }
 
 // Chuyển đổi giữa IPAddress và uint32_t host order
@@ -1459,31 +1591,80 @@ bool parse_mac(const String &macStr, uint8_t *macArr) {
   return false;
 }
 
-// Quản lý DNS Relay: NAPT tự động dịch gói tin DNS (UDP 53) trực tiếp ra mạng ngoài không cần proxy
-void startDnsProxy() {}
-void stopDnsProxy() {}
-void handleDnsProxy() {}
+// Khởi chạy DNS Relay trên cổng 53 để chuyển tiếp DNS cho thiết bị kết nối SoftAP
+void startDnsProxy() {
+  if (!dnsProxyActive) {
+    if (dnsProxyUdp.begin(DNS_PORT)) {
+      dnsProxyActive = true;
+      logMessage("[DNS-RELAY] Da bat DNS Relay tren cong 53 chuyen tiep Internet.");
+    }
+  }
+}
 
-// Bật NAPT và chuyển tiếp DNS an toàn với chuẩn ESP-IDF
+// Dừng DNS Relay
+void stopDnsProxy() {
+  if (dnsProxyActive) {
+    dnsProxyUdp.stop();
+    dnsProxyActive = false;
+    logMessage("[DNS-RELAY] Da tat DNS Relay cong 53.");
+  }
+}
+
+// Xử lý gói tin DNS trên cổng 53 chuyển tiếp đến máy chủ DNS nguồn hoặc 8.8.8.8
+void handleDnsProxy() {
+  if (!dnsProxyActive || WiFi.status() != WL_CONNECTED) return;
+  int packetSize = dnsProxyUdp.parsePacket();
+  if (packetSize > 0 && packetSize <= 512) {
+    uint8_t buffer[512];
+    IPAddress clientIp = dnsProxyUdp.remoteIP();
+    uint16_t clientPort = dnsProxyUdp.remotePort();
+    int len = dnsProxyUdp.read(buffer, packetSize);
+
+    IPAddress upstreamDns = WiFi.dnsIP(0);
+    if (upstreamDns == IPAddress(0, 0, 0, 0)) {
+      upstreamDns = IPAddress(8, 8, 8, 8);
+    }
+
+    WiFiUDP forwardUdp;
+    if (forwardUdp.begin(0)) {
+      forwardUdp.beginPacket(upstreamDns, 53);
+      forwardUdp.write(buffer, len);
+      forwardUdp.endPacket();
+
+      unsigned long t0 = millis();
+      while (millis() - t0 < 600) {
+        int rSize = forwardUdp.parsePacket();
+        if (rSize > 0) {
+          uint8_t resp[512];
+          int rLen = forwardUdp.read(resp, sizeof(resp));
+          dnsProxyUdp.beginPacket(clientIp, clientPort);
+          dnsProxyUdp.write(resp, rLen);
+          dnsProxyUdp.endPacket();
+          break;
+        }
+        delay(2);
+      }
+      forwardUdp.stop();
+    }
+  }
+}
+
+// Bật NAPT và chuyển tiếp DNS an toàn với khóa luồng TCPIP
 void enableNapt() {
   if (!napt_enabled) {
-    esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
-    esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    if (sta_netif != NULL) {
-      esp_netif_set_default_netif(sta_netif);
-    }
-    if (ap_netif != NULL) {
-      esp_netif_napt_enable(ap_netif);
-      esp_netif_ip_info_t ip_info;
-      if (esp_netif_get_ip_info(ap_netif, &ip_info) == ESP_OK) {
-        LOCK_TCPIP_CORE();
-        ip_napt_enable(ip_info.ip.addr, 1);
-        ip_addr_t dnsserver;
-        IP_ADDR4(&dnsserver, 8, 8, 8, 8);
-        dns_setserver(0, &dnsserver);
-        UNLOCK_TCPIP_CORE();
-      }
-    }
+    IPAddress ap_ip;
+    ap_ip.fromString(ap_ip_str);
+
+    ip_addr_t dnsserver;
+    IP_ADDR4(&dnsserver, 8, 8, 8, 8);
+
+    LOCK_TCPIP_CORE();
+    #if __has_include("lwip/lwip_napt.h") || __has_include("lwip/napt.h")
+    ip_napt_enable((uint32_t)ap_ip, 1);
+    #endif
+    dns_setserver(0, &dnsserver);
+    UNLOCK_TCPIP_CORE();
+
     napt_enabled = true;
     logMessage("[NAT] Da kich hoat NAPT dinh tuyen Internet!");
   }
@@ -1492,16 +1673,15 @@ void enableNapt() {
 // Tắt NAPT khi mất kết nối STA
 void disableNapt() {
   if (napt_enabled) {
-    esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
-    if (ap_netif != NULL) {
-      esp_netif_napt_disable(ap_netif);
-      esp_netif_ip_info_t ip_info;
-      if (esp_netif_get_ip_info(ap_netif, &ip_info) == ESP_OK) {
-        LOCK_TCPIP_CORE();
-        ip_napt_enable(ip_info.ip.addr, 0);
-        UNLOCK_TCPIP_CORE();
-      }
-    }
+    IPAddress ap_ip;
+    ap_ip.fromString(ap_ip_str);
+
+    LOCK_TCPIP_CORE();
+    #if __has_include("lwip/lwip_napt.h") || __has_include("lwip/napt.h")
+    ip_napt_enable((uint32_t)ap_ip, 0);
+    #endif
+    UNLOCK_TCPIP_CORE();
+
     napt_enabled = false;
     logMessage("[NAT] Da tam dung NAPT do mat ket noi nguon.");
   }
@@ -1542,44 +1722,30 @@ void stopCaptiveDns() {
 //            CẤU HÌNH ESP-IDF NATIVE DHCP SERVER CHO SOFTAP
 // =========================================================================
 
-static uint32_t active_pool_start = 0;
-static uint32_t active_pool_end = 0;
-
-void configureSoftApDhcp(bool randomizePool) {
+void configureSoftApDhcp() {
   esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
   if (ap_netif != NULL) {
+    esp_netif_dhcps_stop(ap_netif);
+
+    dhcps_lease_t lease;
+    memset(&lease, 0, sizeof(lease));
+    lease.enable = true;
+
     IPAddress s_ip, e_ip, gw_ip, sub_ip;
     if (s_ip.fromString(dhcp_start_str) && e_ip.fromString(dhcp_end_str) && 
         gw_ip.fromString(ap_ip_str) && sub_ip.fromString(ap_subnet_str)) {
 
-      // Tu dong kiem tra va dong bo Subnet Mask /22 (255.255.252.0) va dai IP 10.51.28.x
-      if (ap_subnet_str == "255.255.255.0" || dhcp_start_str.startsWith("10.51.31.") || 
-          (((uint32_t)s_ip & (uint32_t)sub_ip) != ((uint32_t)gw_ip & (uint32_t)sub_ip))) {
+      // Tu dong kiem tra va sua Subnet Mask neu NVS cu luu 255.255.255.0 gay khac Subnet voi 10.51.31.254
+      if (((uint32_t)s_ip & (uint32_t)sub_ip) != ((uint32_t)gw_ip & (uint32_t)sub_ip)) {
         ap_subnet_str = "255.255.252.0";
-        dhcp_start_str = "10.51.28.10";
-        dhcp_end_str = "10.51.28.200";
         sub_ip.fromString(ap_subnet_str);
-        s_ip.fromString(dhcp_start_str);
-        e_ip.fromString(dhcp_end_str);
         prefs.begin("gateway", false);
         prefs.putString("ap_subnet", ap_subnet_str);
-        prefs.putString("dhcp_start", dhcp_start_str);
-        prefs.putString("dhcp_end", dhcp_end_str);
         prefs.end();
-        Serial.println("[DHCP] Tu dong dong bo Subnet Mask thanh 255.255.252.0 (/22) va dai IP 10.51.28.10-200!");
-        addLogToBuffer("[DHCP] Tu dong dong bo Subnet Mask thanh 255.255.252.0 (/22) va dai IP 10.51.28.10-200!");
+        WiFi.softAPConfig(gw_ip, gw_ip, sub_ip);
+        Serial.println("[DHCP] Tu dong dong bo Subnet Mask thanh 255.255.252.0 de dam bao ESP-IDF DHCP hoat dong!");
+        addLogToBuffer("[DHCP] Tu dong dong bo Subnet Mask thanh 255.255.252.0 de dam bao ESP-IDF DHCP hoat dong!");
       }
-
-      // 1. Tạm dừng DHCPS để cài đặt thông số IP info và DHCP options
-      esp_netif_dhcps_stop(ap_netif);
-
-      // 2. Cấu hình IP và Subnet Mask /22 trực tiếp qua ESP-IDF (bỏ qua giới hạn CIDR của wrapper Arduino)
-      bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
-      esp_netif_ip_info_t ip_info;
-      ip_info.ip.addr = (uint32_t)gw_ip;
-      ip_info.netmask.addr = (uint32_t)sub_ip;
-      ip_info.gw.addr = has_uplink ? (uint32_t)gw_ip : 0; // Khi tắt STA: Gateway = 0.0.0.0 để điện thoại dùng 5G
-      esp_netif_set_ip_info(ap_netif, &ip_info);
 
       uint32_t s_u32 = ipToU32(s_ip);
       uint32_t e_u32 = ipToU32(e_ip);
@@ -1592,40 +1758,32 @@ void configureSoftApDhcp(bool randomizePool) {
       uint32_t total = e_u32 - s_u32 + 1;
       const uint32_t WINDOW_SIZE = 60; // ESP-IDF DHCPS_MAX_LEASE mac dinh la 100
 
-      // Chi sinh ngau nhien pool moi khi chua co pool hoac khi duoc yeu cau (khi tat ca client da ngat)
-      if (active_pool_start == 0 || active_pool_end == 0 || randomizePool) {
-        uint32_t cur_start = s_u32;
-        uint32_t cur_end = e_u32;
+      uint32_t cur_start = s_u32;
+      uint32_t cur_end = e_u32;
 
-        if (total > WINDOW_SIZE) {
-          uint32_t max_offset = total - WINDOW_SIZE;
-          uint32_t rand_offset = esp_random() % (max_offset + 1);
-          cur_start = s_u32 + rand_offset;
-          cur_end = cur_start + WINDOW_SIZE - 1;
+      if (total > WINDOW_SIZE) {
+        uint32_t max_offset = total - WINDOW_SIZE;
+        uint32_t rand_offset = esp_random() % (max_offset + 1);
+        cur_start = s_u32 + rand_offset;
+        cur_end = cur_start + WINDOW_SIZE - 1;
 
-          // Tranh trung IP voi Gateway
-          if (gw_u32 >= cur_start && gw_u32 <= cur_end) {
-            if (cur_start >= s_u32 + WINDOW_SIZE) {
-              cur_start -= WINDOW_SIZE;
-              cur_end -= WINDOW_SIZE;
-            } else if (cur_end + WINDOW_SIZE <= e_u32) {
-              cur_start += WINDOW_SIZE;
-              cur_end += WINDOW_SIZE;
-            }
+        // Tranh trung IP voi Gateway
+        if (gw_u32 >= cur_start && gw_u32 <= cur_end) {
+          if (cur_start >= s_u32 + WINDOW_SIZE) {
+            cur_start -= WINDOW_SIZE;
+            cur_end -= WINDOW_SIZE;
+          } else if (cur_end + WINDOW_SIZE <= e_u32) {
+            cur_start += WINDOW_SIZE;
+            cur_end += WINDOW_SIZE;
           }
         }
-        active_pool_start = cur_start;
-        active_pool_end = cur_end;
-        logPrintf("[DHCP] Da chon ngau nhien pool cap IP: %s -> %s (trong tong dai %s -> %s)",
-                  u32ToIp(active_pool_start).toString().c_str(), u32ToIp(active_pool_end).toString().c_str(),
-                  dhcp_start_str.c_str(), dhcp_end_str.c_str());
       }
 
-      dhcps_lease_t lease;
-      memset(&lease, 0, sizeof(lease));
-      lease.enable = true;
-      lease.start_ip.addr = (uint32_t)u32ToIp(active_pool_start);
-      lease.end_ip.addr   = (uint32_t)u32ToIp(active_pool_end);
+      IPAddress active_start = u32ToIp(cur_start);
+      IPAddress active_end = u32ToIp(cur_end);
+
+      lease.start_ip.addr = (uint32_t)active_start;
+      lease.end_ip.addr   = (uint32_t)active_end;
 
       esp_err_t opt_err = esp_netif_dhcps_option(
         ap_netif,
@@ -1635,29 +1793,30 @@ void configureSoftApDhcp(bool randomizePool) {
         sizeof(dhcps_lease_t)
       );
       if (opt_err != ESP_OK) {
-        logPrintf("[DHCP] Set dai IP that bai: %d", opt_err);
+        logPrintf("[DHCP] Set dai IP (%s -> %s) that bai: %d", 
+                  active_start.toString().c_str(), active_end.toString().c_str(), opt_err);
+      } else {
+        logPrintf("[DHCP] Da chon ngau nhien pool cap IP: %s -> %s (trong tong dai %s -> %s)",
+                  active_start.toString().c_str(), active_end.toString().c_str(),
+                  dhcp_start_str.c_str(), dhcp_end_str.c_str());
       }
-    } else {
-      esp_netif_dhcps_stop(ap_netif);
     }
 
-    // 1. Cấu hình Option 3 (Router / Default Gateway):
-    // Chỉ cấp Gateway khi THỰC SỰ có kết nối Wi-Fi nguồn (has_uplink)
-    // Khi chưa có Internet STA hoặc khi tắt STA (chế độ 5G): TẮT Option 3 (OFFER_ROUTER = 0) -> Điện thoại dùng 5G không bị mất mạng!
-    bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
-    dhcps_offer_t dhcps_router_value = has_uplink ? OFFER_ROUTER : 0;
+    // 1. Cau hinh Option 3 (Router / Default Gateway):
+    // Khi sta_enabled && connected: Cap Router cho client de dinh tuyen Internet
+    // Khi sta_enabled == false (Che do Mang noi bo): dhcps_router = 0 -> Khong cap Default Gateway
+    // -> iOS / Android nhan dien mang noi bo Local-Only va tu dong dung du lieu 5G cho Internet!
+    dhcps_offer_t dhcps_router = (sta_enabled && WiFi.status() == WL_CONNECTED) ? OFFER_ROUTER : 0;
     esp_netif_dhcps_option(
       ap_netif,
       ESP_NETIF_OP_SET,
       ESP_NETIF_ROUTER_SOLICITATION_ADDRESS,
-      &dhcps_router_value,
-      sizeof(dhcps_router_value)
+      &dhcps_router,
+      sizeof(dhcps_router)
     );
 
-    // 2. Cấu hình Option 6 (Domain Name Server - DNS):
-    // Khi có Internet STA: Cấp DNS Server để client duyệt web trực tiếp qua NAPT
-    // Khi chưa có Internet STA: KHÔNG cấp DNS (dhcps_dns_value = 0) để điện thoại dùng DNS 5G
-    dhcps_offer_t dhcps_dns_value = has_uplink ? OFFER_DNS : 0;
+    // 2. Cau hinh Option 6 (Domain Name Server - DNS):
+    dhcps_offer_t dhcps_dns_value = (sta_enabled && WiFi.status() == WL_CONNECTED) ? OFFER_DNS : 0;
     esp_netif_dhcps_option(
       ap_netif,
       ESP_NETIF_OP_SET,
@@ -1671,18 +1830,19 @@ void configureSoftApDhcp(bool randomizePool) {
       dns_main.ip.type = IPADDR_TYPE_V4;
       dns_backup.ip.type = IPADDR_TYPE_V4;
 
-      IPAddress upstreamDns = WiFi.dnsIP(0);
-      if (upstreamDns == IPAddress(0, 0, 0, 0)) {
-        upstreamDns = IPAddress(8, 8, 8, 8); // Google Public DNS
+      if (WiFi.status() == WL_CONNECTED) {
+        IPAddress staDns = WiFi.dnsIP(0);
+        if (staDns == IPAddress(0, 0, 0, 0)) {
+          staDns = IPAddress(8, 8, 8, 8);
+        }
+        dns_main.ip.u_addr.ip4.addr = (uint32_t)staDns;
+        dns_backup.ip.u_addr.ip4.addr = (staDns == IPAddress(8, 8, 8, 8)) ? (uint32_t)IPAddress(1, 1, 1, 1) : (uint32_t)IPAddress(8, 8, 8, 8);
+      } else {
+        IPAddress ap_ip;
+        ap_ip.fromString(ap_ip_str);
+        dns_main.ip.u_addr.ip4.addr = (uint32_t)ap_ip;
+        dns_backup.ip.u_addr.ip4.addr = (uint32_t)IPAddress(8, 8, 8, 8);
       }
-      dns_main.ip.u_addr.ip4.addr = (uint32_t)upstreamDns;
-
-      IPAddress backupDns = WiFi.dnsIP(1);
-      if (backupDns == IPAddress(0, 0, 0, 0) || backupDns == upstreamDns) {
-        backupDns = IPAddress(1, 1, 1, 1); // Cloudflare Public DNS
-      }
-      dns_backup.ip.u_addr.ip4.addr = (uint32_t)backupDns;
-
       esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_MAIN, &dns_main);
       esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_BACKUP, &dns_backup);
     }
@@ -1722,35 +1882,15 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
              WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str());
     Serial.println(buf);
     addLogToBuffer(String(buf));
-
-    // Cấu hình DNS Google (8.8.8.8) và Cloudflare (1.1.1.1) cho ESP32
-    esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    if (sta_netif != NULL) {
-      esp_netif_dns_info_t dns_g, dns_cf;
-      dns_g.ip.type = IPADDR_TYPE_V4;
-      dns_g.ip.u_addr.ip4.addr = (uint32_t)IPAddress(8, 8, 8, 8);
-      dns_cf.ip.type = IPADDR_TYPE_V4;
-      dns_cf.ip.u_addr.ip4.addr = (uint32_t)IPAddress(1, 1, 1, 1);
-      esp_netif_set_dns_info(sta_netif, ESP_NETIF_DNS_MAIN, &dns_g);
-      esp_netif_set_dns_info(sta_netif, ESP_NETIF_DNS_BACKUP, &dns_cf);
-    }
-    ip_addr_t dnsserver;
-    IP_ADDR4(&dnsserver, 8, 8, 8, 8);
-    dns_setserver(0, &dnsserver);
-
     enableNapt();
     stopCaptiveDns();
-    configureSoftApDhcp(false);
+    configureSoftApDhcp();
   } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
     Serial.println("[WIFI-STA] Mat ket noi voi Wi-Fi nguon!");
     addLogToBuffer("[WIFI-STA] Mat ket noi voi Wi-Fi nguon!");
     disableNapt();
-    if (sta_enabled) {
-      startCaptiveDns();
-    } else {
-      stopCaptiveDns();
-    }
-    // Khong goi configureSoftApDhcp() o day de tranh restart DHCP lam rot ket noi cac thiet bi dang vao Wi-Fi AP
+    startCaptiveDns();
+    configureSoftApDhcp();
   }
 }
 
@@ -1765,9 +1905,8 @@ void handleRoot() {
 // Bắt và chuyển hướng các request kiểm tra captive của iOS / Android / Windows
 void handleCaptiveRedirect() {
   String uri = server.uri();
-
-  // 1. Chỉ khi THỰC SỰ có kết nối Internet Wi-Fi nguồn mới phản hồi Success / 204
-  if (WiFi.status() == WL_CONNECTED) {
+  if (WiFi.status() == WL_CONNECTED || !sta_enabled) {
+    // Khi da co Internet hoac khi o che do Mang noi bo (5G): phan hoi dung chuan de he dieu hanh khong hien popup Captive Portal
     if (uri.indexOf("hotspot-detect") >= 0 || uri.indexOf("success.html") >= 0 || uri.indexOf("canonical") >= 0) {
       server.send(200, "text/html", "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
       return;
@@ -1788,49 +1927,17 @@ void handleCaptiveRedirect() {
       server.send(200, "text/plain", "success\n");
       return;
     }
+    // Cac dia chi la khac khi da co Internet hoac mang noi bo: tra ve 404
     String host = server.hostHeader();
-    if (host.length() > 0 && host != ap_ip_str && host != WiFi.localIP().toString() && host.indexOf("esp32.local") == -1) {
+    if (host.length() > 0 && host != ap_ip_str) {
       server.send(404, "text/plain", "Not Found");
       return;
     }
   }
 
-  // 2. Khi ở chế độ mạng nội bộ Offline (sta_enabled == false):
-  // Phản hồi Success / 204 cho các probe kiểm tra để điện thoại không báo lỗi mạng/không hiện popup,
-  // đồng thời vì DHCP server KHÔNG cấp Option 3 (Gateway), điện thoại sẽ tự động định tuyến 100% Internet qua 5G
-  if (!sta_enabled) {
-    if (uri.indexOf("hotspot-detect") >= 0 || uri.indexOf("success.html") >= 0 || uri.indexOf("canonical") >= 0) {
-      server.send(200, "text/html", "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
-      return;
-    }
-    if (uri.indexOf("generate_204") >= 0 || uri.indexOf("gen_204") >= 0) {
-      server.send(204, "text/plain", "");
-      return;
-    }
-    if (uri.indexOf("connecttest") >= 0) {
-      server.send(200, "text/plain", "Microsoft Connect Test");
-      return;
-    }
-    if (uri.indexOf("ncsi") >= 0) {
-      server.send(200, "text/plain", "Microsoft NCSI");
-      return;
-    }
-    if (uri.indexOf("success.txt") >= 0) {
-      server.send(200, "text/plain", "success\n");
-      return;
-    }
-    String host = server.hostHeader();
-    if (host.length() > 0 && host != ap_ip_str && host != WiFi.localIP().toString() && host.indexOf("esp32.local") == -1) {
-      server.send(404, "text/plain", "Not Found");
-      return;
-    }
-    handleRoot();
-    return;
-  }
-
-  // 3. Khi đang bật Wi-Fi nguồn nhưng CHƯA có mạng (chờ cấu hình): chuyển hướng về Web Portal để mở Captive Portal
+  // Khi CHUA co Wi-Fi nguon (va dang bat Wi-Fi nguon): chuyen huong tat ca domain la ve Gateway IP de mo trang portal
   String host = server.hostHeader();
-  if (host.length() > 0 && host != ap_ip_str && host != WiFi.localIP().toString() && host.indexOf("esp32.local") == -1) {
+  if (host.length() > 0 && host != ap_ip_str) {
     server.sendHeader("Location", String("http://") + ap_ip_str + "/", true);
     server.send(302, "text/plain", "");
     return;
@@ -1843,7 +1950,7 @@ void handleApiStatus() {
   IPAddress sta_ip = WiFi.localIP();
   IPAddress sta_gw = WiFi.gatewayIP();
   int rssi = WiFi.RSSI();
-  bool connected = (sta_enabled && WiFi.status() == WL_CONNECTED);
+  bool connected = (WiFi.status() == WL_CONNECTED);
 
   char pinBuf[10];
   sprintf(pinBuf, "%06u", ble_pin);
@@ -1859,14 +1966,14 @@ void handleApiStatus() {
   String json = "{";
   json += "\"sta_enabled\":" + String(sta_enabled ? "true" : "false") + ",";
   json += "\"connected\":" + String(connected ? "true" : "false") + ",";
-  json += "\"sta_ssid\":\"" + (sta_enabled ? sta_ssid : "") + "\",";
-  json += "\"sta_pass\":\"" + (sta_enabled ? safe_sta_pass : "") + "\",";
+  json += "\"sta_ssid\":\"" + sta_ssid + "\",";
+  json += "\"sta_pass\":\"" + safe_sta_pass + "\",";
   json += "\"sta_ip\":\"" + (connected ? sta_ip.toString() : "") + "\",";
   json += "\"sta_gw\":\"" + (connected ? sta_gw.toString() : "") + "\",";
   json += "\"sta_bssid\":\"" + (connected ? WiFi.BSSIDstr() : "") + "\",";
   json += "\"sta_subnet\":\"" + (connected ? WiFi.subnetMask().toString() : "") + "\",";
   json += "\"sta_channel\":" + String(connected ? WiFi.channel() : 0) + ",";
-  json += "\"sta_rssi\":" + String(connected ? rssi : 0) + ",";
+  json += "\"sta_rssi\":" + String(rssi) + ",";
   json += "\"ap_ssid\":\"" + ap_ssid + "\",";
   json += "\"ap_pass\":\"" + safe_ap_pass + "\",";
   json += "\"ap_bssid\":\"" + ap_bssid_str + "\",";
@@ -1883,6 +1990,10 @@ void handleApiStatus() {
   json += "\"napt\":" + String(napt_enabled ? "true" : "false") + ",";
   json += "\"fw_ver\":\"" + FIRMWARE_VERSION + "\",";
   json += "\"ota_url\":\"" + ota_version_url + "\",";
+  json += "\"cloud_enabled\":" + String(cloud_enabled ? "true" : "false") + ",";
+  json += "\"cloud_url\":\"" + cloud_url + "\",";
+  json += "\"cloud_key\":\"" + cloud_key + "\",";
+  json += "\"cloud_online\":" + String(cloud_online ? "true" : "false") + ",";
   json += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
   json += "\"uptime\":" + String(millis() / 1000);
   json += "}";
@@ -1943,8 +2054,8 @@ void handleApiSaveBle() {
   server.send(200, "application/json", json);
 }
 
-// Tuần tự hóa bộ đệm nhật ký hệ thống ra chuỗi JSON
-String serializeLogsJson() {
+// API: Lấy danh sách các dòng log gần nhất
+void handleApiLogs() {
   String json = "[";
   int start = (logCount < LOG_BUFFER_SIZE) ? 0 : logHead;
   for (int i = 0; i < logCount; i++) {
@@ -1958,12 +2069,7 @@ String serializeLogsJson() {
     json += "\"" + line + "\"";
   }
   json += "]";
-  return json;
-}
-
-// API: Lấy danh sách các dòng log gần nhất
-void handleApiLogs() {
-  server.send(200, "application/json", serializeLogsJson());
+  server.send(200, "application/json", json);
 }
 
 // API: Xóa bộ đệm log
@@ -1973,25 +2079,23 @@ void handleApiClearLogs() {
   server.send(200, "application/json", "{\"success\":true}");
 }
 
-// Quét nhanh Wi-Fi 2.4GHz và cập nhật bộ đệm JSON (dành cho BLE Console và Serial)
-String performWifiScanJson() {
-  if (WiFi.getMode() == WIFI_AP) {
-    WiFi.mode(WIFI_AP_STA);
-    delay(40);
+// API: Quét các mạng Wi-Fi 2.4GHz xung quanh
+void handleApiScan() {
+  bool force = server.hasArg("force") || server.hasArg("refresh");
+  // Nếu đã có cache còn mới (dưới 30 giây) và không bị ép quét lại: trả về cache ngay lập tức!
+  if (!force && cached_scan_json.length() > 5 && (millis() - last_scan_time < 30000)) {
+    server.send(200, "application/json", cached_scan_json);
+    return;
   }
-  if (WiFi.status() != WL_CONNECTED && WiFi.status() != WL_IDLE_STATUS) {
-    WiFi.disconnect(false);
-  }
-  logMessage("[SCAN] Dang thuc hien quet Wi-Fi 2.4GHz...");
+
+  logMessage("[SCAN] Dang thuc hien quet nhanh Wi-Fi 2.4GHz (Active Fast Scan)...");
+  // Quét chủ động cực nhanh với 40ms/kênh (tổng ~500ms) để giữ sóng SoftAP không bị rớt
   int n = WiFi.scanNetworks(false, false, false, 40);
   if (n >= 0) {
     String json = "[";
     for (int i = 0; i < n; i++) {
       if (i > 0) json += ",";
-      String ssid = WiFi.SSID(i);
-      ssid.replace("\\", "\\\\");
-      ssid.replace("\"", "\\\"");
-      json += "{\"ssid\":\"" + ssid + "\",";
+      json += "{\"ssid\":\"" + WiFi.SSID(i) + "\",";
       json += "\"rssi\":" + String(WiFi.RSSI(i)) + ",";
       json += "\"ch\":" + String(WiFi.channel(i)) + ",";
       json += "\"secure\":" + String(WiFi.encryptionType(i) != WIFI_AUTH_OPEN ? "true" : "false") + "}";
@@ -2000,61 +2104,9 @@ String performWifiScanJson() {
     WiFi.scanDelete();
     cached_scan_json = json;
     last_scan_time = millis();
-    logPrintf("[SCAN] Quet xong! Tim thay %d mang Wi-Fi.", n);
-    return json;
-  }
-  return cached_scan_json.length() > 2 ? cached_scan_json : "[]";
-}
-
-// API: Quét các mạng Wi-Fi 2.4GHz xung quanh bất đồng bộ (Non-blocking Async Scan cho Web Portal)
-void handleApiScan() {
-  bool force = server.hasArg("force") || server.hasArg("refresh");
-  if (!force && cached_scan_json.length() > 5 && (millis() - last_scan_time < 20000)) {
     server.send(200, "application/json", cached_scan_json);
-    return;
-  }
-
-  int16_t scanStatus = WiFi.scanComplete();
-  if (scanStatus == WIFI_SCAN_RUNNING) {
-    server.send(200, "application/json", "{\"status\":\"scanning\"}");
-    return;
-  }
-
-  if (scanStatus >= 0) {
-    String json = "[";
-    for (int i = 0; i < scanStatus; i++) {
-      if (i > 0) json += ",";
-      String ssid = WiFi.SSID(i);
-      ssid.replace("\\", "\\\\");
-      ssid.replace("\"", "\\\"");
-      json += "{\"ssid\":\"" + ssid + "\",";
-      json += "\"rssi\":" + String(WiFi.RSSI(i)) + ",";
-      json += "\"ch\":" + String(WiFi.channel(i)) + ",";
-      json += "\"secure\":" + String(WiFi.encryptionType(i) != WIFI_AUTH_OPEN ? "true" : "false") + "}";
-    }
-    json += "]";
-    WiFi.scanDelete();
-    cached_scan_json = json;
-    last_scan_time = millis();
-    logPrintf("[SCAN] Quet xong! Tim thay %d mang Wi-Fi.", scanStatus);
-    server.send(200, "application/json", json);
-    return;
-  }
-
-  // Khởi động tiến trình quét mới bất đồng bộ
-  if (WiFi.getMode() == WIFI_AP) {
-    WiFi.mode(WIFI_AP_STA);
-    delay(30);
-  }
-  if (WiFi.status() != WL_CONNECTED && WiFi.status() != WL_IDLE_STATUS) {
-    WiFi.disconnect(false);
-  }
-  logMessage("[SCAN] Bat dau quet song Wi-Fi bat dong bo (Async Scan)...");
-  int16_t startResult = WiFi.scanNetworks(true, false, false, 40);
-  if (startResult == WIFI_SCAN_RUNNING || startResult >= 0) {
-    server.send(200, "application/json", "{\"status\":\"scanning\"}");
   } else {
-    server.send(200, "application/json", cached_scan_json.length() > 2 ? cached_scan_json : "[]");
+    server.send(200, "application/json", cached_scan_json);
   }
 }
 
@@ -2095,38 +2147,48 @@ void handleApiSetStaMode() {
     prefs.end();
 
     if (!sta_enabled) {
-      server.send(200, "application/json", "{\"success\":true,\"sta_enabled\":false,\"msg\":\"Da chuyen sang che do MANG NOI BO! Dien thoai ket noi se tu dong dung 5G de truy cap Internet.\"}");
-      delay(40);
       WiFi.disconnect(true);
       WiFi.mode(WIFI_AP);
       disableNapt();
       stopCaptiveDns();
-      stopDnsProxy();
-      configureSoftApDhcp(false);
-      delay(50);
-      esp_wifi_deauth_sta(0);
+      configureSoftApDhcp();
       logMessage("[MODE] Da TAT Wi-Fi nguon -> Che do MANG NOI BO (Dien thoai dung 5G).");
+      server.send(200, "application/json", "{\"success\":true,\"sta_enabled\":false,\"msg\":\"Da chuyen sang che do MANG NOI BO! Dien thoai ket noi se tu dong dung 5G de truy cap Internet.\"}");
     } else {
-      server.send(200, "application/json", "{\"success\":true,\"sta_enabled\":true,\"msg\":\"Da BAT Wi-Fi nguon! ESP32 dang ket noi lai Internet...\"}");
-      delay(40);
       WiFi.mode(WIFI_AP_STA);
       if (sta_ssid.length() > 0) {
         WiFi.begin(sta_ssid.c_str(), (sta_password.length() > 0 ? sta_password.c_str() : NULL));
       }
-      configureSoftApDhcp(false);
       logMessage("[MODE] Da BAT Wi-Fi nguon -> Dang ket noi Internet...");
+      server.send(200, "application/json", "{\"success\":true,\"sta_enabled\":true,\"msg\":\"Da BAT Wi-Fi nguon! ESP32 dang ket noi lai Internet...\"}");
     }
   } else {
     server.send(400, "application/json", "{\"error\":\"Thieu tham so enabled\"}");
   }
 }
 
-// API: Khởi động lại thiết bị ESP32 (Reboot System)
-void handleApiReboot() {
-  server.send(200, "application/json", "{\"success\":true,\"msg\":\"Dang khoi dong lai ESP32...\"}");
-  logMessage("[SYS] Yeu cau khoi dong lai qua Web Portal!");
-  should_reboot = true;
-  reboot_time = millis() + 500;
+// API: Lưu cấu hình quản lý từ xa qua Internet (Cloud Remote Access)
+void handleApiSaveCloud() {
+  if (server.hasArg("enabled")) {
+    String val = server.arg("enabled");
+    cloud_enabled = (val == "1" || val.equalsIgnoreCase("true"));
+    if (server.hasArg("url")) cloud_url = server.arg("url");
+    if (server.hasArg("key")) cloud_key = server.arg("key");
+
+    cloud_url.trim();
+    cloud_key.trim();
+
+    prefs.begin("gateway", false);
+    prefs.putBool("cloud_en", cloud_enabled);
+    prefs.putString("cloud_url", cloud_url);
+    prefs.putString("cloud_key", cloud_key);
+    prefs.end();
+
+    logPrintf("[CLOUD] Da luu cau hinh Cloud Remote: Enabled=%d, URL=%s", cloud_enabled, cloud_url.c_str());
+    server.send(200, "application/json", "{\"success\":true,\"msg\":\"Da luu cau hinh Cloud Remote thanh cong!\"}");
+  } else {
+    server.send(400, "application/json", "{\"error\":\"Thieu tham so enabled\"}");
+  }
 }
 
 // API: Lưu các tham số mạng phát (SoftAP) và khởi động lại
@@ -2407,10 +2469,10 @@ void setup() {
   Serial.println("\n--- [KHOI TAO ESP32 REPEATER & CUSTOM RANDOM DHCP & BLE SECURE] ---");
   Serial.printf("[HARDWARE] Flash Chip Size: %d MB\n", ESP.getFlashChipSize() / (1024 * 1024));
 
-  // Vo hieu hoa tinh nang tiet kiem dien Modem Sleep tren Wi-Fi de dam bao SoftAP phat song lien tuc,
-  // khong bi giat lag, rot goi tin hoac vang ket noi thiet bi.
-  WiFi.setSleep(false);
-  esp_wifi_set_ps(WIFI_PS_NONE);
+  // Kích hoạt Static Buffers cho Wi-Fi Stack trước khi khởi động bất kỳ interface mạng nào.
+  // Đảm bảo phần cứng CCMP Encryption và 802.11w SA Query luôn có bộ đệm TX riêng biệt,
+  // không bị mbedTLS (khi kiểm tra HTTPS OTA) chiếm dụng bộ nhớ gây rớt kết nối Wi-Fi AP.
+  WiFi.useStaticBuffers(true);
 
   // Đăng ký bắt sự kiện Wi-Fi ngắt kết nối
   WiFi.onEvent(onWiFiEvent);
@@ -2420,9 +2482,11 @@ void setup() {
   String installed_ver = prefs.getString("fw_installed_ver", "");
   if (installed_ver != FIRMWARE_VERSION) {
     logPrintf("[UPGRADE] Phat hien phien ban moi: v%s (Ban cu: %s).", FIRMWARE_VERSION.c_str(), installed_ver.length() > 0 ? installed_ver.c_str() : "None");
-    // Giu nguyen thong tin Wi-Fi nguon (sta_ssid, sta_pass) de sau khi nang cap ESP32 tu dong ket noi lai
+    // Xóa Wi-Fi nguồn (STA) khi nâng cấp firmware mới theo đúng yêu cầu
+    prefs.remove("sta_ssid");
+    prefs.remove("sta_pass");
     prefs.putString("fw_installed_ver", FIRMWARE_VERSION);
-    logMessage("[UPGRADE] Nang cap thanh cong! Toan bo cau hinh Wi-Fi duoc bao toan.");
+    logMessage("[UPGRADE] Da lam moi Wi-Fi nguon (STA). Toan bo cau hinh mang phat va Preset duoc bao toan!");
   }
 
   sta_enabled    = prefs.getBool("sta_en", true);
@@ -2450,21 +2514,14 @@ void setup() {
   ap_ip_str      = prefs.getString("ap_ip", "10.51.31.254");
   ap_subnet_str  = prefs.getString("ap_subnet", "255.255.252.0");
   dhcp_start_str = prefs.getString("dhcp_start", "10.51.28.10");
-  dhcp_end_str   = prefs.getString("dhcp_end", "10.51.28.200"); // Dải IP cấp ngẫu nhiên 10.51.28.x
+  dhcp_end_str   = prefs.getString("dhcp_end", "10.51.28.200"); // Dải IP cấp ngẫu nhiên
   tx_power_boost = prefs.getBool("tx_boost", false);            // Mặc định KHÔNG BẬT (15 dBm Standard)
   ble_enabled     = prefs.getBool("ble_en", true);               // Bật sóng Bluetooth LE
-  ble_pin         = prefs.getUInt("ble_pin", 70213);             // Mã PIN ghép đôi 6 số (070213)
+  ble_pin         = prefs.getUInt("ble_pin", 686868);            // Mã PIN ghép đôi 6 số
+  cloud_enabled   = prefs.getBool("cloud_en", false);            // Quản lý từ xa qua Internet
+  cloud_url       = prefs.getString("cloud_url", "");
+  cloud_key       = prefs.getString("cloud_key", "686868");
   ota_version_url = prefs.getString("ota_url", "https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/version.json");
-
-  // Tu dong dong bo Subnet Mask /22 (255.255.252.0) va dai IP 10.51.28.x neu NVS luu cu
-  if (ap_subnet_str == "255.255.255.0" || dhcp_start_str.startsWith("10.51.31.")) {
-    ap_subnet_str = "255.255.252.0";
-    dhcp_start_str = "10.51.28.10";
-    dhcp_end_str = "10.51.28.200";
-    prefs.putString("ap_subnet", ap_subnet_str);
-    prefs.putString("dhcp_start", dhcp_start_str);
-    prefs.putString("dhcp_end", dhcp_end_str);
-  }
   prefs.end();
 
   // Nạp danh sách mẫu cấu hình mạng phát (SoftAP Presets)
@@ -2473,9 +2530,26 @@ void setup() {
   // Bước 2: Khởi động Bluetooth LE Console & Provisioning Server (Bảo mật mã PIN phần cứng)
   initBleServer();
 
-  // Bước 3: Kích hoạt chế độ Wi-Fi (Không quét kênh ngầm khi khởi động để tránh nhảy kênh làm lag Wi-Fi AP)
+  // Bước 3: Kích hoạt chế độ Wi-Fi
   if (sta_enabled) {
     WiFi.mode(WIFI_AP_STA);
+    logMessage("[SCAN] Dang quet truoc mang Wi-Fi khi khoi dong...");
+    int init_scan = WiFi.scanNetworks(false, false, false, 50);
+    if (init_scan >= 0) {
+      String json = "[";
+      for (int i = 0; i < init_scan; i++) {
+        if (i > 0) json += ",";
+        json += "{\"ssid\":\"" + WiFi.SSID(i) + "\",";
+        json += "\"rssi\":" + String(WiFi.RSSI(i)) + ",";
+        json += "\"ch\":" + String(WiFi.channel(i)) + ",";
+        json += "\"secure\":" + String(WiFi.encryptionType(i) != WIFI_AUTH_OPEN ? "true" : "false") + "}";
+      }
+      json += "]";
+      WiFi.scanDelete();
+      cached_scan_json = json;
+      last_scan_time = millis();
+      logPrintf("[SCAN] Da quet xong %d mang Wi-Fi san sang phuc vu Web Portal!", init_scan);
+    }
   } else {
     WiFi.mode(WIFI_AP);
     logMessage("[MODE] Khoi dong o che do MANG NOI BO (Offline Local LAN - Dien thoai dung 5G).");
@@ -2492,19 +2566,23 @@ void setup() {
     }
   }
 
-  // Bước 5: Cấu hình Gateway và Subnet Mask /22 cho mạng phát SoftAP qua Native ESP-IDF
-  esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
-  if (ap_netif != NULL) {
-    IPAddress ap_ip, subnet;
-    ap_ip.fromString(ap_ip_str);
+  // Bước 5: Cấu hình Gateway và Subnet Mask cho mạng phát SoftAP
+  IPAddress ap_ip, gateway, subnet, s_ip;
+  ap_ip.fromString(ap_ip_str);
+  gateway.fromString(ap_ip_str);
+  subnet.fromString(ap_subnet_str);
+  s_ip.fromString(dhcp_start_str);
+
+  if (((uint32_t)s_ip & (uint32_t)subnet) != ((uint32_t)gateway & (uint32_t)subnet)) {
+    ap_subnet_str = "255.255.252.0";
     subnet.fromString(ap_subnet_str);
-    esp_netif_ip_info_t ip_info;
-    ip_info.ip.addr = (uint32_t)ap_ip;
-    ip_info.netmask.addr = (uint32_t)subnet;
-    ip_info.gw.addr = (sta_enabled && WiFi.status() == WL_CONNECTED) ? (uint32_t)ap_ip : 0; // 5G mode: gateway = 0.0.0.0
-    esp_netif_dhcps_stop(ap_netif);
-    esp_netif_set_ip_info(ap_netif, &ip_info);
+    prefs.begin("gateway", false);
+    prefs.putString("ap_subnet", ap_subnet_str);
+    prefs.end();
+    Serial.println("[SETUP] Tu dong dieu chinh ap_subnet thanh 255.255.252.0 de dong bo dai IP!");
   }
+
+  WiFi.softAPConfig(ap_ip, gateway, subnet);
 
   current_effective_channel = ap_channel;
   if (current_effective_channel == 0) {
@@ -2519,7 +2597,7 @@ void setup() {
   applyTxPower(tx_power_boost);
 
   // Bước 7: Cấu hình dải IP cho Native ESP-IDF DHCP Server
-  configureSoftApDhcp(true);
+  configureSoftApDhcp();
 
   logPrintf("[AP] Phat song thanh cong: SSID: '%s' | MAC: %s | Gateway: %s | Kenh: %d%s", 
             ap_ssid.c_str(), WiFi.softAPmacAddress().c_str(), WiFi.softAPIP().toString().c_str(),
@@ -2546,7 +2624,7 @@ void setup() {
   server.on("/api/run_ota", HTTP_POST, handleApiRunOta);
   server.on("/api/save_ota_url", HTTP_POST, handleApiSaveOtaUrl);
   server.on("/api/set_sta_mode", HTTP_POST, handleApiSetStaMode);
-  server.on("/api/reboot", HTTP_POST, handleApiReboot);
+  server.on("/api/save_cloud", HTTP_POST, handleApiSaveCloud);
 
   // Endpoint bẫy Captive Portal (iOS, Android, Windows)
   server.on("/hotspot-detect.html", HTTP_GET, handleCaptiveRedirect); // Apple
@@ -2558,12 +2636,6 @@ void setup() {
 
   server.begin();
   logMessage("[WEB] Web Server cong 80 da san sang!");
-
-  // Bước 8b: Khởi tạo mDNS (http://esp32.local/)
-  if (MDNS.begin("esp32")) {
-    MDNS.addService("http", "tcp", 80);
-    logMessage("[MDNS] Ten mien cuc bo: http://esp32.local/ da san sang!");
-  }
 
   // Bước 9: Kết nối vào Wi-Fi nguồn (STA) nếu được bật
   if (sta_enabled) {
@@ -2586,7 +2658,7 @@ void setup() {
       logPrintf("[STA] Da ket noi Internet thanh cong! IP nhan: %s", WiFi.localIP().toString().c_str());
       enableNapt();
       stopCaptiveDns();
-      configureSoftApDhcp(false);
+      configureSoftApDhcp();
     } else {
       logMessage("[CANH BAO] Chua ket noi duoc Wi-Fi nguon. Kich hoat Captive Portal!");
       startCaptiveDns();
@@ -2595,7 +2667,7 @@ void setup() {
     logMessage("[MODE] Wi-Fi nguon dang TAT -> MANG NOI BO OFFLINE. Dien thoai dung 5G.");
     disableNapt();
     stopCaptiveDns();
-    configureSoftApDhcp(false);
+    configureSoftApDhcp();
   }
 
   logMessage("===> HE THONG GATEWAY + BLE SECURE + RANDOM DHCP DA SAN SANG! <===");
@@ -2607,11 +2679,12 @@ void loop() {
 
   // 2. Tái cấu hình ngẫu nhiên pool DHCP khi tat ca thiet bi da ngat ket noi
   if (dhcp_reconfigure_needed) {
-    dhcp_reconfigure_needed = false;
     wifi_sta_list_t sta_list;
     if (esp_wifi_ap_get_sta_list(&sta_list) == ESP_OK && sta_list.num == 0) {
-      logMessage("[DHCP] Tat ca thiet bi da ngat ket noi -> Chon ngau nhien pool IP moi...");
-      configureSoftApDhcp(true);
+      dhcp_reconfigure_needed = false;
+      configureSoftApDhcp();
+    } else {
+      dhcp_reconfigure_needed = false;
     }
   }
 
@@ -2649,13 +2722,14 @@ void loop() {
           logMessage("[LOOP] STA da ket noi lai! Bat NAPT va tat Captive Portal.");
           enableNapt();
           stopCaptiveDns();
-          configureSoftApDhcp(false);
+          configureSoftApDhcp();
         }
       } else {
-        if (napt_enabled) {
+        if (napt_enabled || !dns_captive_running) {
           logMessage("[LOOP] STA mat ket noi! Tat NAPT va bat Captive Portal.");
           disableNapt();
           startCaptiveDns();
+          configureSoftApDhcp();
         }
       }
     } else {
@@ -2689,7 +2763,10 @@ void loop() {
     handleBleCommand(serialCmd);
   }
 
-  // 9. Khởi động lại sau khi lưu cấu hình AP hoặc có lệnh từ Web/BLE
+  // 9. Đồng bộ quản lý từ xa qua Internet (Cloud Remote Access)
+  syncWithCloudServer();
+
+  // 10. Khởi động lại sau khi lưu cấu hình AP
   if (should_reboot && millis() >= reboot_time) {
     logMessage("[REBOOT] Dang khoi dong lai ESP32...");
     delay(100);

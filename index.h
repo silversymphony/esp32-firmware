@@ -112,9 +112,6 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         <button type="button" class="lang-btn active" id="btnLangVi" onclick="setLanguage('vi')">🇻🇳 VI</button>
         <button type="button" class="lang-btn" id="btnLangEn" onclick="setLanguage('en')">🇬🇧 EN</button>
       </div>
-      <button type="button" class="btn" style="width: auto; padding: 4px 10px; font-size: 11px; font-weight: 700; background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 4px;" onclick="rebootEsp32()" title="Khởi động lại ESP32">
-        <span>🔄</span> <span id="btnNavReboot">Reboot</span>
-      </button>
       <div id="connBadge" class="badge badge-danger">ĐANG KIỂM TRA</div>
     </div>
   </div>
@@ -447,63 +444,6 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
   <!-- TAB 4: WIRELESS CONSOLE LOG & GITHUB OTA -->
   <div id="tab4" class="hidden">
     
-    <!-- Khởi Động Lại Hệ Thống (Reboot System) -->
-    <div class="card" style="background: linear-gradient(135deg, rgba(239, 68, 68, 0.12), rgba(17, 24, 39, 0.9)); border-color: rgba(239, 68, 68, 0.35);">
-      <div class="card-title">
-        <span style="display: flex; align-items: center; gap: 6px;">
-          <span>🔄</span>
-          <span id="cardTitleReboot" style="color: #f87171;">Khởi Động Lại Hệ Thống (Reboot System)</span>
-        </span>
-        <span class="badge" style="background: rgba(239, 68, 68, 0.2); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.4);">RESTART</span>
-      </div>
-      <div id="rebootDesc" style="font-size: 11px; color: #cbd5e1; line-height: 1.5; margin-bottom: 12px;">
-        Khởi động lại chip ESP32 ngay lập tức để làm mới bộ nhớ RAM, giải phóng tài nguyên hệ thống và áp dụng toàn bộ cài đặt.
-      </div>
-      <button type="button" class="btn" style="background: linear-gradient(135deg, #ef4444, #dc2626); color: #fff; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 6px;" onclick="rebootEsp32()">
-        <span>⚡</span> <span id="btnRebootText">Khởi Động Lại ESP32 Ngay</span>
-      </button>
-    </div>
-
-    <!-- Phương Án Truy Cập Trực Tiếp Qua IP & Tên Miền Cục Bộ -->
-    <div class="card" style="background: linear-gradient(135deg, rgba(14, 165, 233, 0.12), rgba(17, 24, 39, 0.9)); border-color: rgba(56, 189, 248, 0.35);">
-      <div class="card-title">
-        <span style="display: flex; align-items: center; gap: 6px;">
-          <span>🌐</span>
-          <span id="cardTitleDirectAccess" style="color: #38bdf8;">Truy Cập Trực Tiếp Nội Bộ (Direct Local Access)</span>
-        </span>
-        <span class="badge badge-success">KHUYẾN NGHỊ</span>
-      </div>
-      <div style="font-size: 11px; color: #cbd5e1; line-height: 1.5; margin-bottom: 10px;">
-        Hệ thống hỗ trợ 3 phương án truy cập trực tiếp tốc độ cao, hoàn toàn không phụ thuộc Internet đám mây:
-      </div>
-      <div style="display: flex; flex-direction: column; gap: 8px;">
-        <div style="background: var(--card-inner); padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
-          <div style="font-weight: 700; font-size: 11px; color: #67e8f9;">1. SoftAP Gateway (Khi kết nối Wi-Fi phát):</div>
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
-            <a href="http://10.51.31.254" target="_blank" style="color: #fbbf24; font-family: monospace; font-size: 12px; text-decoration: underline;">http://10.51.31.254/</a>
-            <button type="button" class="btn" style="width: auto; padding: 2px 8px; font-size: 10px;" onclick="copyToClipboard('http://10.51.31.254/')">📋 Copy</button>
-          </div>
-        </div>
-        <div style="background: var(--card-inner); padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
-          <div style="font-weight: 700; font-size: 11px; color: #67e8f9;">2. IP Mạng Nhà (LAN IP - khi cùng mạng Wi-Fi nguồn):</div>
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
-            <a id="linkStaDirectIp" href="#" target="_blank" style="color: #34d399; font-family: monospace; font-size: 12px; text-decoration: underline;">Chưa kết nối Wi-Fi nguồn</a>
-            <button id="btnCopyStaIp" type="button" class="btn hidden" style="width: auto; padding: 2px 8px; font-size: 10px;" onclick="copyStaIp()">📋 Copy</button>
-          </div>
-        </div>
-        <div style="background: var(--card-inner); padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
-          <div style="font-weight: 700; font-size: 11px; color: #67e8f9;">3. Tên Miền Cục Bộ mDNS (Không cần nhớ IP):</div>
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
-            <a href="http://esp32.local" target="_blank" style="color: #a78bfa; font-family: monospace; font-size: 12px; text-decoration: underline;">http://esp32.local/</a>
-            <button type="button" class="btn" style="width: auto; padding: 2px 8px; font-size: 10px;" onclick="copyToClipboard('http://esp32.local/')">📋 Copy</button>
-          </div>
-        </div>
-      </div>
-      <div class="notice" style="margin-top: 8px; margin-bottom: 0; color: #94a3b8; font-size: 10px;">
-        💡 Mật khẩu truy cập Web Portal mặc định là: <b style="color: #fbbf24;">070213</b>
-      </div>
-    </div>
-
     <!-- Nâng Cấp Firmware Không Dây (GitHub OTA) -->
     <div class="card" style="background: linear-gradient(135deg, rgba(79, 70, 229, 0.12), rgba(17, 24, 39, 0.9)); border-color: rgba(99, 102, 241, 0.35);">
       <div class="card-title">
@@ -610,6 +550,13 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       <div class="terminal" id="termLogs">
         <div>[DANG TAI NHAT KY HE THONG...]</div>
       </div>
+    </div>
+
+    <!-- Nút Khởi Động Lại Nhỏ Gọn Cuối Tab 4 -->
+    <div style="text-align: center; margin-top: 15px; margin-bottom: 5px;">
+      <button type="button" class="btn" style="width: auto; padding: 7px 18px; font-size: 11px; font-weight: 600; background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;" onclick="rebootEsp32()">
+        <span>🔄</span> <span id="btnRebootText">Khởi Động Lại ESP32</span>
+      </button>
     </div>
 
   </div>
@@ -729,11 +676,7 @@ var I18N = {
     lblDhcpEnd: "Kết thúc:",
     noticeDhcp: "🎲 Hệ thống tự động bốc ngẫu nhiên 1 IP trong dải này cho thiết bị mỗi lần kết nối!",
     btnSaveAp: "💾 Lưu Tham Số & Khởi Động Lại AP",
-    cardTitleReboot: "Khởi Động Lại Hệ Thống (Reboot System)",
-    rebootDesc: "Khởi động lại chip ESP32 ngay lập tức để làm mới bộ nhớ RAM, giải phóng tài nguyên hệ thống và áp dụng toàn bộ cài đặt.",
-    btnRebootText: "Khởi Động Lại ESP32 Ngay",
-    btnNavReboot: "Reboot",
-    cardTitleDirectAccess: "Truy Cập Trực Tiếp Nội Bộ (Direct Local Access)",
+    btnRebootText: "Khởi Động Lại ESP32",
     cardTitleOta: "Nâng Cấp Firmware Không Dây (GitHub OTA)",
     lblOtaUrl: "Đường dẫn GitHub Version (version.json)",
     btnSaveOtaUrl: "Lưu URL",
@@ -821,11 +764,7 @@ var I18N = {
     lblDhcpEnd: "End:",
     noticeDhcp: "🎲 Randomly allocates an IP within this range on each client connection!",
     btnSaveAp: "💾 Save Parameters & Restart AP",
-    cardTitleReboot: "Reboot System",
-    rebootDesc: "Immediately restarts the ESP32 to refresh system memory, free resources, and apply all configurations.",
-    btnRebootText: "Reboot ESP32 Now",
-    btnNavReboot: "Reboot",
-    cardTitleDirectAccess: "Direct Local Access",
+    btnRebootText: "Reboot ESP32",
     cardTitleOta: "Over-the-Air Firmware Upgrade (GitHub OTA)",
     lblOtaUrl: "GitHub Version URL (version.json)",
     btnSaveOtaUrl: "Save URL",
@@ -1080,30 +1019,15 @@ function renderStatus(d) {
     document.getElementById('inputOtaUrl').value = d.ota_url;
   }
 
-  // Cập nhật liên kết truy cập trực tiếp qua IP mạng nhà (LAN IP)
-  var linkSta = document.getElementById('linkStaDirectIp');
-  var btnCopySta = document.getElementById('btnCopyStaIp');
-  if (linkSta) {
-    if (d.connected && d.sta_ip && d.sta_ip.length > 6) {
-      linkSta.href = 'http://' + d.sta_ip + '/';
-      linkSta.innerText = 'http://' + d.sta_ip + '/';
-      if (btnCopySta) btnCopySta.classList.remove('hidden');
-    } else {
-      linkSta.removeAttribute('href');
-      linkSta.innerText = currentLang === 'en' ? 'Not connected to Wi-Fi' : 'Chưa kết nối Wi-Fi nguồn';
-      if (btnCopySta) btnCopySta.classList.add('hidden');
-    }
-  }
-
   if (!document.getElementById('staSsidInput').value) document.getElementById('staSsidInput').value = d.sta_ssid || '';
   if (!document.getElementById('staPassInput').value && d.sta_pass) document.getElementById('staPassInput').value = d.sta_pass;
   if (!document.getElementById('apSsidInput').value) document.getElementById('apSsidInput').value = d.ap_ssid || '';
   if (!document.getElementById('apPassInput').value && d.ap_pass) document.getElementById('apPassInput').value = d.ap_pass;
   if (!document.getElementById('apBssidInput').value) document.getElementById('apBssidInput').value = d.ap_bssid || '';
   if (!document.getElementById('apIpInput').value) document.getElementById('apIpInput').value = d.ap_ip || '';
-  if (!document.getElementById('apSubnetInput').value) document.getElementById('apSubnetInput').value = d.ap_subnet || '';
-  if (!document.getElementById('dhcpStartInput').value) document.getElementById('dhcpStartInput').value = d.dhcp_start || '10.51.31.10';
-  if (!document.getElementById('dhcpEndInput').value) document.getElementById('dhcpEndInput').value = d.dhcp_end || '10.51.31.200';
+  if (!document.getElementById('apSubnetInput').value) document.getElementById('apSubnetInput').value = d.ap_subnet || '255.255.252.0';
+  if (!document.getElementById('dhcpStartInput').value) document.getElementById('dhcpStartInput').value = d.dhcp_start || '10.51.28.10';
+  if (!document.getElementById('dhcpEndInput').value) document.getElementById('dhcpEndInput').value = d.dhcp_end || '10.51.28.200';
   if (d.ap_channel !== undefined) document.getElementById('apChannelSelect').value = d.ap_channel;
 }
 
@@ -1150,23 +1074,6 @@ function showRebootOverlay() {
       window.location.reload();
     }
   }, 1000);
-}
-
-function copyToClipboard(text) {
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(function() {
-      showToast(currentLang === 'en' ? 'Copied: ' + text : 'Đã sao chép: ' + text);
-    }).catch(function() {
-      prompt(currentLang === 'en' ? 'Copy URL:' : 'Sao chép địa chỉ:', text);
-    });
-  } else {
-    prompt(currentLang === 'en' ? 'Copy URL:' : 'Sao chép địa chỉ:', text);
-  }
-}
-
-function copyStaIp() {
-  var el = document.getElementById('linkStaDirectIp');
-  if (el && el.href) copyToClipboard(el.href);
 }
 
 function toggleStaMode(isEn) {

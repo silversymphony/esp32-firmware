@@ -1526,12 +1526,12 @@ void configureSoftApDhcp(bool randomizePool) {
     if (s_ip.fromString(dhcp_start_str) && e_ip.fromString(dhcp_end_str) && 
         gw_ip.fromString(ap_ip_str) && sub_ip.fromString(ap_subnet_str)) {
 
-      // Tu dong kiem tra va dong bo Subnet Mask /24 (255.255.255.0) tuong thich 100% Arduino Core 3.x
-      if (ap_subnet_str == "255.255.252.0" || dhcp_start_str.startsWith("10.51.28.") || 
+      // Tu dong kiem tra va dong bo Subnet Mask /22 (255.255.252.0) va dai IP 10.51.28.x
+      if (ap_subnet_str == "255.255.255.0" || dhcp_start_str.startsWith("10.51.31.") || 
           (((uint32_t)s_ip & (uint32_t)sub_ip) != ((uint32_t)gw_ip & (uint32_t)sub_ip))) {
-        ap_subnet_str = "255.255.255.0";
-        dhcp_start_str = "10.51.31.10";
-        dhcp_end_str = "10.51.31.200";
+        ap_subnet_str = "255.255.252.0";
+        dhcp_start_str = "10.51.28.10";
+        dhcp_end_str = "10.51.28.200";
         sub_ip.fromString(ap_subnet_str);
         s_ip.fromString(dhcp_start_str);
         e_ip.fromString(dhcp_end_str);
@@ -1540,17 +1540,20 @@ void configureSoftApDhcp(bool randomizePool) {
         prefs.putString("dhcp_start", dhcp_start_str);
         prefs.putString("dhcp_end", dhcp_end_str);
         prefs.end();
-        Serial.println("[DHCP] Tu dong dong bo Subnet Mask thanh 255.255.255.0 (/24) va dai IP 10.51.31.10-200!");
-        addLogToBuffer("[DHCP] Tu dong dong bo Subnet Mask thanh 255.255.255.0 (/24) va dai IP 10.51.31.10-200!");
+        Serial.println("[DHCP] Tu dong dong bo Subnet Mask thanh 255.255.252.0 (/22) va dai IP 10.51.28.10-200!");
+        addLogToBuffer("[DHCP] Tu dong dong bo Subnet Mask thanh 255.255.252.0 (/22) va dai IP 10.51.28.10-200!");
       }
 
-      // 1. Cấu hình IP và Subnet cho AP netif trước
-      bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
-      IPAddress softApGw = has_uplink ? gw_ip : IPAddress(0, 0, 0, 0);
-      WiFi.softAPConfig(gw_ip, softApGw, sub_ip);
-
-      // 2. Tạm dừng DHCPS để cấu hình các tùy chọn (DHCP options bắt buộc set khi DHCPS STOPPED)
+      // 1. Tạm dừng DHCPS để cài đặt thông số IP info và DHCP options
       esp_netif_dhcps_stop(ap_netif);
+
+      // 2. Cấu hình IP và Subnet Mask /22 trực tiếp qua ESP-IDF (bỏ qua giới hạn CIDR của wrapper Arduino)
+      bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
+      esp_netif_ip_info_t ip_info;
+      ip_info.ip.addr = (uint32_t)gw_ip;
+      ip_info.netmask.addr = (uint32_t)sub_ip;
+      ip_info.gw.addr = has_uplink ? (uint32_t)gw_ip : 0; // Khi tắt STA: Gateway = 0.0.0.0 để điện thoại dùng 5G
+      esp_netif_set_ip_info(ap_netif, &ip_info);
 
       uint32_t s_u32 = ipToU32(s_ip);
       uint32_t e_u32 = ipToU32(e_ip);
@@ -2330,19 +2333,19 @@ void setup() {
   }
   ap_bssid_str   = prefs.getString("ap_bssid", "84:F1:47:4F:27:A0");
   ap_ip_str      = prefs.getString("ap_ip", "10.51.31.254");
-  ap_subnet_str  = prefs.getString("ap_subnet", "255.255.255.0");
-  dhcp_start_str = prefs.getString("dhcp_start", "10.51.31.10");
-  dhcp_end_str   = prefs.getString("dhcp_end", "10.51.31.200"); // Dải IP cấp ngẫu nhiên
+  ap_subnet_str  = prefs.getString("ap_subnet", "255.255.252.0");
+  dhcp_start_str = prefs.getString("dhcp_start", "10.51.28.10");
+  dhcp_end_str   = prefs.getString("dhcp_end", "10.51.28.200"); // Dải IP cấp ngẫu nhiên 10.51.28.x
   tx_power_boost = prefs.getBool("tx_boost", false);            // Mặc định KHÔNG BẬT (15 dBm Standard)
   ble_enabled     = prefs.getBool("ble_en", true);               // Bật sóng Bluetooth LE
   ble_pin         = prefs.getUInt("ble_pin", 70213);             // Mã PIN ghép đôi 6 số (070213)
   ota_version_url = prefs.getString("ota_url", "https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/version.json");
 
-  // Tu dong dong bo Subnet Mask /24 (255.255.255.0) neu NVS cu luu 255.255.252.0
-  if (ap_subnet_str == "255.255.252.0" || dhcp_start_str.startsWith("10.51.28.")) {
-    ap_subnet_str = "255.255.255.0";
-    dhcp_start_str = "10.51.31.10";
-    dhcp_end_str = "10.51.31.200";
+  // Tu dong dong bo Subnet Mask /22 (255.255.252.0) va dai IP 10.51.28.x neu NVS luu cu
+  if (ap_subnet_str == "255.255.255.0" || dhcp_start_str.startsWith("10.51.31.")) {
+    ap_subnet_str = "255.255.252.0";
+    dhcp_start_str = "10.51.28.10";
+    dhcp_end_str = "10.51.28.200";
     prefs.putString("ap_subnet", ap_subnet_str);
     prefs.putString("dhcp_start", dhcp_start_str);
     prefs.putString("dhcp_end", dhcp_end_str);
@@ -2374,13 +2377,19 @@ void setup() {
     }
   }
 
-  // Bước 5: Cấu hình Gateway và Subnet Mask cho mạng phát SoftAP
-  IPAddress ap_ip, gateway, subnet;
-  ap_ip.fromString(ap_ip_str);
-  gateway = sta_enabled ? ap_ip : IPAddress(0, 0, 0, 0); // 5G mode: gateway = 0.0.0.0
-  subnet.fromString(ap_subnet_str);
-
-  WiFi.softAPConfig(ap_ip, gateway, subnet);
+  // Bước 5: Cấu hình Gateway và Subnet Mask /22 cho mạng phát SoftAP qua Native ESP-IDF
+  esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+  if (ap_netif != NULL) {
+    IPAddress ap_ip, subnet;
+    ap_ip.fromString(ap_ip_str);
+    subnet.fromString(ap_subnet_str);
+    esp_netif_ip_info_t ip_info;
+    ip_info.ip.addr = (uint32_t)ap_ip;
+    ip_info.netmask.addr = (uint32_t)subnet;
+    ip_info.gw.addr = sta_enabled ? (uint32_t)ap_ip : 0; // 5G mode: gateway = 0.0.0.0
+    esp_netif_dhcps_stop(ap_netif);
+    esp_netif_set_ip_info(ap_netif, &ip_info);
+  }
 
   current_effective_channel = ap_channel;
   if (current_effective_channel == 0) {

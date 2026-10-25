@@ -1202,9 +1202,6 @@ function renderWifiList(networks) {
 }
 
 function scanWifi(force) {
-  if (lastStatusData && (lastStatusData.sta_enabled === false || lastStatusData.connected) && !force) {
-    return;
-  }
   var btn = document.getElementById('scanBtn');
   var list = document.getElementById('wifiScanResults');
   btn.innerText = currentLang === 'en' ? 'Scanning...' : 'Đang quét...';
@@ -1213,26 +1210,15 @@ function scanWifi(force) {
   var url = force ? '/api/scan?force=1' : '/api/scan';
   fetch(url)
     .then(function(res) { return res.json(); })
-    .then(function(networks) {
-      if (!networks || networks.length === 0) {
+    .then(function(data) {
+      if (data && data.status === 'scanning') {
         list.innerHTML = '<div style="font-size:11px;color:#38bdf8;text-align:center;padding:12px;">' + 
-          (currentLang === 'en' ? 'Scan command sent to ESP32... Waiting 3.5s for sync.' : 'Đang gửi lệnh quét tới ESP32... Vui lòng đợi ~3-4 giây...') + 
+          (currentLang === 'en' ? 'Scanning Wi-Fi... Please wait ~2s.' : 'Đang quét sóng Wi-Fi... Vui lòng đợi ~2 giây...') + 
           '</div>';
-        setTimeout(function() {
-          fetch('/api/scan')
-            .then(function(r) { return r.json(); })
-            .then(function(nets2) {
-              btn.innerText = currentLang === 'en' ? '🔍 Rescan' : '🔍 Quét lại';
-              btn.disabled = false;
-              renderWifiList(nets2);
-            })
-            .catch(function() {
-              btn.innerText = currentLang === 'en' ? '🔍 Rescan' : '🔍 Quét lại';
-              btn.disabled = false;
-            });
-        }, 3500);
+        setTimeout(function() { scanWifi(false); }, 1500);
         return;
       }
+      var networks = Array.isArray(data) ? data : [];
       btn.innerText = currentLang === 'en' ? '🔍 Rescan' : '🔍 Quét lại';
       btn.disabled = false;
       renderWifiList(networks);

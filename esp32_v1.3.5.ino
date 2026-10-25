@@ -1723,8 +1723,9 @@ void handleRoot() {
 // Bắt và chuyển hướng các request kiểm tra captive của iOS / Android / Windows
 void handleCaptiveRedirect() {
   String uri = server.uri();
-  if (WiFi.status() == WL_CONNECTED || !sta_enabled) {
-    // Khi da co Internet hoac khi o che do Mang noi bo (5G): phan hoi dung chuan de he dieu hanh khong hien popup Captive Portal
+
+  // 1. Chỉ khi THỰC SỰ có kết nối Internet Wi-Fi nguồn mới phản hồi Success / 204
+  if (WiFi.status() == WL_CONNECTED) {
     if (uri.indexOf("hotspot-detect") >= 0 || uri.indexOf("success.html") >= 0 || uri.indexOf("canonical") >= 0) {
       server.send(200, "text/html", "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
       return;
@@ -1745,7 +1746,6 @@ void handleCaptiveRedirect() {
       server.send(200, "text/plain", "success\n");
       return;
     }
-    // Cac dia chi la khac khi da co Internet hoac mang noi bo: tra ve 404 (cho phep IP LAN va mDNS esp32.local)
     String host = server.hostHeader();
     if (host.length() > 0 && host != ap_ip_str && host != WiFi.localIP().toString() && host.indexOf("esp32.local") == -1) {
       server.send(404, "text/plain", "Not Found");
@@ -1753,7 +1753,23 @@ void handleCaptiveRedirect() {
     }
   }
 
-  // Khi CHUA co Wi-Fi nguon (va dang bat Wi-Fi nguon): chuyen huong tat ca domain la ve Gateway IP de mo trang portal
+  // 2. Khi ở chế độ mạng nội bộ Offline (sta_enabled == false):
+  // KHÔNG giả mạo Internet! Trả về 404 cho probe/domain lạ để điện thoại nhận biết Wi-Fi không có Internet và tự dùng 5G
+  if (!sta_enabled) {
+    if (uri.indexOf("hotspot-detect") >= 0 || uri.indexOf("generate_204") >= 0 || uri.indexOf("gen_204") >= 0 || uri.indexOf("connecttest") >= 0 || uri.indexOf("ncsi") >= 0) {
+      server.send(404, "text/plain", "Offline Local Network");
+      return;
+    }
+    String host = server.hostHeader();
+    if (host.length() > 0 && host != ap_ip_str && host != WiFi.localIP().toString() && host.indexOf("esp32.local") == -1) {
+      server.send(404, "text/plain", "Offline Local Network");
+      return;
+    }
+    handleRoot();
+    return;
+  }
+
+  // 3. Khi đang bật Wi-Fi nguồn nhưng CHƯA có mạng (chờ cấu hình): chuyển hướng về Web Portal để mở Captive Portal
   String host = server.hostHeader();
   if (host.length() > 0 && host != ap_ip_str && host != WiFi.localIP().toString() && host.indexOf("esp32.local") == -1) {
     server.sendHeader("Location", String("http://") + ap_ip_str + "/", true);
@@ -1898,14 +1914,17 @@ void handleApiClearLogs() {
   server.send(200, "application/json", "{\"success\":true}");
 }
 
-// Quét nhanh Wi-Fi 2.4GHz và cập nhật bộ đệm JSON
+// Quét nhanh Wi-Fi 2.4GHz và cập nhật bộ đệm JSON (dành cho BLE Console và Serial)
 String performWifiScanJson() {
-  if (!sta_enabled) {
-    cached_scan_json = "[]";
-    return "[]";
+  if (WiFi.getMode() == WIFI_AP) {
+    WiFi.mode(WIFI_AP_STA);
+    delay(40);
   }
-  logMessage("[SCAN] Dang thuc hien quet nhanh Wi-Fi 2.4GHz (Active Fast Scan)...");
-  int n = WiFi.scanNetworks(false, false, false, 40);
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.disconnect(false);
+  }
+  logMessage("[SCAN] Dang thuc hien quet Wi-Fi 2.4GHz...");
+  int n = WiFi.scanNetworks(false, false, false, 120);
   if (n >= 0) {
     String json = "[";
     for (int i = 0; i < n; i++) {
@@ -1928,19 +1947,56 @@ String performWifiScanJson() {
   return cached_scan_json.length() > 2 ? cached_scan_json : "[]";
 }
 
-// API: Quét các mạng Wi-Fi 2.4GHz xung quanh
+// API: Quét các mạng Wi-Fi 2.4GHz xung quanh bất đồng bộ (Non-blocking Async Scan cho Web Portal)
 void handleApiScan() {
-  if (!sta_enabled) {
-    server.send(200, "application/json", "[]");
-    return;
-  }
   bool force = server.hasArg("force") || server.hasArg("refresh");
-  if (!force && cached_scan_json.length() > 5 && (millis() - last_scan_time < 30000)) {
+  if (!force && cached_scan_json.length() > 5 && (millis() - last_scan_time < 20000)) {
     server.send(200, "application/json", cached_scan_json);
     return;
   }
-  String json = performWifiScanJson();
-  server.send(200, "application/json", json);
+
+  int16_t scanStatus = WiFi.scanComplete();
+  if (scanStatus == WIFI_SCAN_RUNNING) {
+    server.send(200, "application/json", "{\"status\":\"scanning\"}");
+    return;
+  }
+
+  if (scanStatus >= 0) {
+    String json = "[";
+    for (int i = 0; i < scanStatus; i++) {
+      if (i > 0) json += ",";
+      String ssid = WiFi.SSID(i);
+      ssid.replace("\\", "\\\\");
+      ssid.replace("\"", "\\\"");
+      json += "{\"ssid\":\"" + ssid + "\",";
+      json += "\"rssi\":" + String(WiFi.RSSI(i)) + ",";
+      json += "\"ch\":" + String(WiFi.channel(i)) + ",";
+      json += "\"secure\":" + String(WiFi.encryptionType(i) != WIFI_AUTH_OPEN ? "true" : "false") + "}";
+    }
+    json += "]";
+    WiFi.scanDelete();
+    cached_scan_json = json;
+    last_scan_time = millis();
+    logPrintf("[SCAN] Quet xong! Tim thay %d mang Wi-Fi.", scanStatus);
+    server.send(200, "application/json", json);
+    return;
+  }
+
+  // Khởi động tiến trình quét mới bất đồng bộ
+  if (WiFi.getMode() == WIFI_AP) {
+    WiFi.mode(WIFI_AP_STA);
+    delay(40);
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.disconnect(false);
+  }
+  logMessage("[SCAN] Bat dau quet song Wi-Fi bat dong bo (Async Scan)...");
+  int16_t startResult = WiFi.scanNetworks(true, false, false, 150);
+  if (startResult == WIFI_SCAN_RUNNING || startResult >= 0) {
+    server.send(200, "application/json", "{\"status\":\"scanning\"}");
+  } else {
+    server.send(200, "application/json", cached_scan_json.length() > 2 ? cached_scan_json : "[]");
+  }
 }
 
 // API: Lưu cấu hình Wi-Fi nguồn (STA) và bắt đầu kết nối
@@ -2386,7 +2442,7 @@ void setup() {
     esp_netif_ip_info_t ip_info;
     ip_info.ip.addr = (uint32_t)ap_ip;
     ip_info.netmask.addr = (uint32_t)subnet;
-    ip_info.gw.addr = sta_enabled ? (uint32_t)ap_ip : 0; // 5G mode: gateway = 0.0.0.0
+    ip_info.gw.addr = (sta_enabled && WiFi.status() == WL_CONNECTED) ? (uint32_t)ap_ip : 0; // 5G mode: gateway = 0.0.0.0
     esp_netif_dhcps_stop(ap_netif);
     esp_netif_set_ip_info(ap_netif, &ip_info);
   }

@@ -1,0 +1,5 @@
+{
+  "version": "1.3.7",
+  "url": "https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/esp32_v1.3.7/esp32_v1.3.7.ino.bin",
+  "changelog": "Bản phát hành v1.3.7: Hiển thị đầy đủ tên thiết bị Bluetooth LE (ESP32-Gateway-BLE); điều khiển đèn LED xanh GPIO 2 báo trạng thái Wi-Fi nguồn (Tắt khi tắt STA, Sáng khi đã kết nối, Nhấp nháy 1s khi đang tìm kiếm); mặc định khởi động lần đầu tắt Wi-Fi nguồn (ưu tiên mạng nội bộ 5G); chống spam log mất kết nối khi Wi-Fi ngoài vùng phủ sóng; sửa triệt để lỗi kiểm tra OTA connection refused (-1) bằng cách bảo toàn DNS DHCP router, xác thực DNS và mở rộng stack task FreeRTOS 16KB."
+}

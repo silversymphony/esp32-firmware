@@ -1381,99 +1381,26 @@ String getGithubRawUrl(const String &url) {
   return url;
 }
 
-// Tách chuỗi URL HTTPS thành host, port và path
-bool parseHttpsUrl(const String &url, String &hostOut, uint16_t &portOut, String &pathOut) {
-  if (!url.startsWith("https://")) return false;
-  String rest = url.substring(8);
-  int slashIdx = rest.indexOf('/');
-  String hostPort = (slashIdx >= 0) ? rest.substring(0, slashIdx) : rest;
-  pathOut = (slashIdx >= 0) ? rest.substring(slashIdx) : "/";
-
-  int colonIdx = hostPort.indexOf(':');
-  if (colonIdx >= 0) {
-    hostOut = hostPort.substring(0, colonIdx);
-    portOut = hostPort.substring(colonIdx + 1).toInt();
-  } else {
-    hostOut = hostPort;
-    portOut = 443;
-  }
-  return (hostOut.length() > 0);
-}
-
-// Phân giải DNS ép buộc theo chuẩn IPv4 (tránh hoàn toàn lỗi IPv6 không có gateway route trên ESP32)
-bool resolveHostIPv4(const char *hostname, IPAddress &result) {
-  struct addrinfo hints;
-  memset(&hints, 0, sizeof(hints));
-  hints.ai_family = AF_INET; // BẮT BUỘC IPv4, loại bỏ AAAA IPv6
-  hints.ai_socktype = SOCK_STREAM;
-  struct addrinfo *res = NULL;
-  int err = lwip_getaddrinfo(hostname, "443", &hints, &res);
-  if (err == 0 && res != NULL) {
-    struct sockaddr_in *saddr = (struct sockaddr_in *)res->ai_addr;
-    result = IPAddress(saddr->sin_addr.s_addr);
-    lwip_freeaddrinfo(res);
-    return true;
-  }
-  if (res != NULL) lwip_freeaddrinfo(res);
-  return false;
-}
-
 // Đối tượng WiFiClientSecure dùng chung cho OTA (tránh tạo/hủy liên tục gây phân mảnh RAM heap)
 static WiFiClientSecure otaClient;
 
 // Helper thực hiện tải JSON qua HTTPS
 bool fetchOtaJson(const String &targetUrl, String &payloadOut, String &errOut) {
-  logPrintf("[OTA] Dang kiem tra version tu: %s (Free Heap: %u bytes | Max Block: %u bytes)", 
-            targetUrl.c_str(), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-
-  String host, path;
-  uint16_t port = 443;
-  if (!parseHttpsUrl(targetUrl, host, port, path)) {
-    errOut = "URL khong hop le (can bat dau bang https://): " + targetUrl;
-    return false;
-  }
-
-  // 1. Phân giải DNS IPv4 an toàn
-  IPAddress hostIp;
-  if (!resolveHostIPv4(host.c_str(), hostIp)) {
-    errOut = "Loi DNS IPv4: Khong the phan giai ten mien " + host;
-    logPrintf("[OTA-LOI] %s", errOut.c_str());
-    return false;
-  }
-  logPrintf("[OTA] DNS IPv4 thanh cong: %s -> %s", host.c_str(), hostIp.toString().c_str());
-
-  if (ESP.getMaxAllocHeap() < 20000) {
-    errOut = "Khong du khoi nho RAM lien tuc (Max Block: " + String(ESP.getMaxAllocHeap()) + " bytes, Free: " + String(ESP.getFreeHeap()) + " bytes) de khoi tao SSL!";
-    logPrintf("[OTA-LOI] %s", errOut.c_str());
-    return false;
-  }
+  logPrintf("[OTA] Kiem tra: %s (Free: %u | Max: %u)", targetUrl.c_str(), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
   try {
     otaClient.stop();
     otaClient.setInsecure();
-    otaClient.setTimeout(15000);
-    otaClient.setHandshakeTimeout(15000);
-
-    // 2. Kết nối trực tiếp socket tới IPv4 với SNI hostname để bảo đảm định tuyến đúng qua STA
-    if (!otaClient.connect(hostIp, port, host.c_str(), NULL, NULL, NULL)) {
-      char sslErr[100] = {0};
-      otaClient.lastError(sslErr, sizeof(sslErr));
-      String detail = (sslErr[0] != 0) ? String(" | SSL: ") + sslErr : "";
-      errOut = "Loi ket noi TLS toi " + hostIp.toString() + detail;
-      logPrintf("[OTA-LOI] %s", errOut.c_str());
-      otaClient.stop();
-      return false;
-    }
+    otaClient.setTimeout(20000);
+    otaClient.setHandshakeTimeout(20000);
 
     HTTPClient http;
     http.setUserAgent("ESP32-Gateway-OTA/1.3.8");
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    http.setConnectTimeout(15000);
-    http.setTimeout(15000);
-    http.setReuse(true);
+    http.setConnectTimeout(20000);
+    http.setTimeout(20000);
 
-    // 3. Khởi tạo HTTPClient với client đã kết nối sẵn qua IPv4
-    if (!http.begin(otaClient, host, port, path, true)) {
+    if (!http.begin(otaClient, targetUrl)) {
       otaClient.stop();
       errOut = "Khong the khoi tao HTTPClient voi " + targetUrl;
       return false;
@@ -1577,21 +1504,8 @@ bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &e
 
 // Helper thực hiện tải firmware và ghi Flash
 bool executeOtaDownload(const String &dlUrl) {
-  logPrintf("[OTA] Bat dau tai firmware tu: %s (Free Heap: %u bytes)", dlUrl.c_str(), ESP.getFreeHeap());
-
-  String host, path;
-  uint16_t port = 443;
-  if (!parseHttpsUrl(dlUrl, host, port, path)) {
-    logPrintf("[OTA-LOI] URL firmware khong hop le: %s", dlUrl.c_str());
-    return false;
-  }
-
-  IPAddress hostIp;
-  if (!resolveHostIPv4(host.c_str(), hostIp)) {
-    logPrintf("[OTA-LOI] Loi DNS IPv4 cho %s", host.c_str());
-    return false;
-  }
-  logPrintf("[OTA] DNS IPv4 thanh cong: %s -> %s", host.c_str(), hostIp.toString().c_str());
+  logPrintf("[OTA] Bat dau tai firmware tu: %s (Free Heap: %u bytes | Max Block: %u bytes)", 
+            dlUrl.c_str(), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
   try {
     otaClient.stop();
@@ -1599,23 +1513,13 @@ bool executeOtaDownload(const String &dlUrl) {
     otaClient.setTimeout(30000);
     otaClient.setHandshakeTimeout(30000);
 
-    if (!otaClient.connect(hostIp, port, host.c_str(), NULL, NULL, NULL)) {
-      char sslErr[100] = {0};
-      otaClient.lastError(sslErr, sizeof(sslErr));
-      String detail = (sslErr[0] != 0) ? String(" | SSL: ") + sslErr : "";
-      logPrintf("[OTA-LOI] Ket noi TLS toi %s that bai%s", hostIp.toString().c_str(), detail.c_str());
-      otaClient.stop();
-      return false;
-    }
-
     HTTPClient http;
     http.setUserAgent("ESP32-Gateway-OTA/1.3.8");
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     http.setConnectTimeout(30000);
     http.setTimeout(30000);
-    http.setReuse(true);
 
-    if (!http.begin(otaClient, host, port, path, true)) {
+    if (!http.begin(otaClient, dlUrl)) {
       otaClient.stop();
       logPrintf("[OTA-LOI] Khong the khoi tao HTTPClient den %s", dlUrl.c_str());
       return false;
@@ -3009,7 +2913,8 @@ void loop() {
   // 6c. Xử lý kiểm tra OTA bất đồng bộ trong loopTask (tái sử dụng stack, không tốn thêm 8KB heap)
   if (ota_check_state == OTA_CHECK_REQUESTED) {
     ota_check_state = OTA_CHECK_RUNNING;
-    delay(100); // Chờ WebServer socket gửi nốt HTTP 200
+    delay(300); // Chờ WebServer socket gửi nốt HTTP 200 và đóng hoàn toàn kết nối
+    logPrintf("[OTA-LOOP] Truoc khi check | Free: %u | Max: %u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
     bool ok = checkGithubOta(ota_new_ver, ota_bin_url, ota_changelog, ota_err_msg);
     ota_check_state = ok ? OTA_CHECK_SUCCESS : OTA_CHECK_FAILED;
   }

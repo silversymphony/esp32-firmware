@@ -26,7 +26,7 @@ Tất cả các thông số cấu hình trên Web Portal đều có thể cài �
 | | `PROFILE:DEL` | `PROFILE:DEL:p2` | Xóa một mẫu cấu hình khỏi danh sách |
 | | `APMAC` | `APMAC:84:F1:47:4F:27:A0` | Đổi địa chỉ BSSID (MAC) phần cứng mạng phát |
 | | `APIP` | `APIP:10.51.31.254,255.255.252.0` | Đổi IP Gateway và Subnet Mask |
-| | `DHCP` | `DHCP:10.51.28.10,10.51.28.200` | Cài đặt dải cấp IP ngẫu nhiên Custom DHCP (191 IP) |
+| | `DHCP` | `DHCP:10.51.31.10,10.51.31.200` | Cài đặt dải cấp IP ngẫu nhiên Custom DHCP (191 IP) |
 | | `BOOST` | `BOOST:ON` hoặc `BOOST:OFF` | Bật/tắt phát sóng cực đại 20 dBm (~100mW) vs 15 dBm |
 | **Quản Lý Từ Xa (Cloud)** | `CLOUD` | `CLOUD:ON` hoặc `CLOUD:OFF` | Bật/tắt tính năng kết nối Cloudflare Worker Relay |
 | | `CLOUD:CONFIG` | `CLOUD:CONFIG:https://esp32.silversymphony.workers.dev,123456` | Cài đặt địa chỉ Cloudflare Worker URL và Access Key |
@@ -69,7 +69,7 @@ Tất cả các thông số cấu hình trên Web Portal đều có thể cài �
   AP Channel: Auto (Dang phat: 6)
   AP Presets: 2 mau da luu
   AP Clients: 2
-  DHCP Pool: 10.51.28.10 -> 10.51.28.200 (Random)
+  DHCP Pool: 10.51.31.10 -> 10.51.31.200 (Random)
   TX Power: 15 dBm (Standard)
   BLE PIN: 123456 | Radio: BAT
   OTA URL: https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/version.json
@@ -147,10 +147,10 @@ Tất cả các thông số cấu hình trên Web Portal đều có thể cài �
   === DANH SACH MAU CAU HINH MANG PHAT (PRESETS) ===
   [1] ID: p1 | 'Mặc định (ODE Wireless)'
       SSID: ODE - wireless WiFi | Pass: Ode6868@ | Ch: 6
-      IP: 10.51.31.254 | Sub: 255.255.252.0 | DHCP: 10.51.28.10 -> 10.51.28.200
+      IP: 10.51.31.254 | Sub: 255.255.255.0 | DHCP: 10.51.31.10 -> 10.51.31.200
   [2] ID: p2 | 'Tối ưu Tự Động (Auto Channel)'
       SSID: ODE - wireless WiFi | Pass: Ode6868@ | Ch: Auto
-      IP: 10.51.31.254 | Sub: 255.255.252.0 | DHCP: 10.51.28.10 -> 10.51.28.200
+      IP: 10.51.31.254 | Sub: 255.255.255.0 | DHCP: 10.51.31.10 -> 10.51.31.200
   Lenh: 'PROFILE:APPLY:id', 'PROFILE:SAVE:TenMoi', 'PROFILE:CLONE', 'PROFILE:DEL:id'
   ```
 
@@ -189,13 +189,13 @@ Tất cả các thông số cấu hình trên Web Portal đều có thể cài �
 
 #### • `APIP:<gateway_ip>,<subnet_mask>`
 - **Mục đích:** Đổi địa chỉ IP cổng Gateway và Subnet Mask của mạng phát.
-- **Ví dụ:** `APIP:10.51.31.254,255.255.252.0`
-- **Phản hồi:** `[OK] Da luu Gateway IP: 10.51.31.254 | Subnet: 255.255.252.0. Gui 'REBOOT' de ap dung!`
+- **Ví dụ:** `APIP:10.51.31.254,255.255.255.0`
+- **Phản hồi:** `[OK] Da luu Gateway IP: 10.51.31.254 | Subnet: 255.255.255.0. Gui 'REBOOT' de ap dung!`
 
 #### • `DHCP:<start_ip>,<end_ip>`
 - **Mục đích:** Cấu hình dải cấp phát IP ngẫu nhiên cho Custom DHCP Server trên cổng UDP 67.
-- **Ví dụ:** `DHCP:10.51.28.10,10.51.28.200` (dải gồm 191 địa chỉ IP).
-- **Phản hồi:** `[OK] Da luu dai cap DHCP: 10.51.28.10 -> 10.51.28.200`
+- **Ví dụ:** `DHCP:10.51.31.10,10.51.31.200` (dải gồm 191 địa chỉ IP).
+- **Phản hồi:** `[OK] Da luu dai cap DHCP: 10.51.31.10 -> 10.51.31.200`
 
 #### • `BOOST:ON` hoặc `BOOST:OFF`
 - **Mục đích:** Điều chỉnh công suất phát sóng Wi-Fi phần cứng.

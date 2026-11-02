@@ -386,8 +386,8 @@ void handleBleCommand(String cmd) {
     h += "• PROFILE:CLONE     -> Sao chep Wi-Fi nguon (STA) thanh Preset AP\n";
     h += "• PROFILE:DEL:id    -> Xoa mau cau hinh khoi danh sach\n";
     h += "• APMAC:mac         -> Doi dia chi MAC phan cung (VD: APMAC:84:F1:47:4F:27:A0)\n";
-    h += "• APIP:ip,subnet    -> Doi Gateway IP & Subnet (VD: APIP:10.51.31.254,255.255.252.0)\n";
-    h += "• DHCP:start,end    -> Doi dai cap IP ngau nhien (VD: DHCP:10.51.28.10,10.51.28.200)\n";
+    h += "• APIP:ip,subnet    -> Doi Gateway IP & Subnet (VD: APIP:10.51.31.254,255.255.255.0)\n";
+    h += "• DHCP:start,end    -> Doi dai cap IP ngau nhien (VD: DHCP:10.51.31.10,10.51.31.200)\n";
     h += "• BOOST:ON | OFF    -> Bat/tat phat song cuc dai 20 dBm (~100mW)\n";
     h += "\n-- [3. Bao Mat & Bluetooth] --\n";
     h += "• SETPIN:pin_6_so   -> Doi ma PIN ghep doi Bluetooth (VD: SETPIN:123456)\n";
@@ -716,13 +716,13 @@ void handleBleCommand(String cmd) {
     String s_gw = gw.toString();
     if (s_gw == "0.0.0.0") s_gw = "10.51.31.254";
 
-    IPAddress sub = connected ? WiFi.subnetMask() : IPAddress(255, 255, 252, 0);
+    IPAddress sub = connected ? WiFi.subnetMask() : IPAddress(255, 255, 255, 0);
     String s_sub = sub.toString();
-    if (s_sub == "0.0.0.0") s_sub = "255.255.252.0";
+    if (s_sub == "0.0.0.0") s_sub = "255.255.255.0";
 
     int s_ch = connected ? WiFi.channel() : ap_channel;
 
-    IPAddress my_ip = connected ? WiFi.localIP() : IPAddress(10, 51, 28, 100);
+    IPAddress my_ip = connected ? WiFi.localIP() : IPAddress(10, 51, 31, 100);
     String prefix = String(my_ip[0]) + "." + String(my_ip[1]) + "." + String(my_ip[2]) + ".";
     String s_dhcp_start = prefix + "10";
     String s_dhcp_end = prefix + "200";
@@ -782,10 +782,19 @@ void handleBleCommand(String cmd) {
       prefs.begin("gateway", false);
       prefs.putString("ap_ip", ap_ip_str);
       prefs.putString("ap_subnet", ap_subnet_str);
+
+      // Tự động đồng bộ dải DHCP sang cùng subnet /24 với Gateway IP mới
+      IPAddress curDhcpStart;
+      if (!curDhcpStart.fromString(dhcp_start_str) || curDhcpStart[0] != testIp[0] || curDhcpStart[1] != testIp[1] || curDhcpStart[2] != testIp[2]) {
+        dhcp_start_str = String(testIp[0]) + "." + String(testIp[1]) + "." + String(testIp[2]) + ".10";
+        dhcp_end_str   = String(testIp[0]) + "." + String(testIp[1]) + "." + String(testIp[2]) + ".200";
+        prefs.putString("dhcp_start", dhcp_start_str);
+        prefs.putString("dhcp_end", dhcp_end_str);
+      }
       prefs.end();
-      sendResponse("[OK] Da luu Gateway IP: " + ap_ip_str + " | Subnet: " + ap_subnet_str + ". Gui 'REBOOT' de ap dung!");
+      sendResponse("[OK] Da luu Gateway IP: " + ap_ip_str + " | Subnet: " + ap_subnet_str + " | DHCP: " + dhcp_start_str + " -> " + dhcp_end_str + ". Gui 'REBOOT' de ap dung!");
     } else {
-      sendResponse("[ERROR] IP hoac Subnet khong hop le! Vi du: APIP:10.51.31.254,255.255.252.0");
+      sendResponse("[ERROR] IP hoac Subnet khong hop le! Vi du: APIP:10.51.31.254,255.255.255.0");
     }
     return;
   }
@@ -811,7 +820,7 @@ void handleBleCommand(String cmd) {
         return;
       }
     }
-    sendResponse("[ERROR] Cu phap sai! Vi du: DHCP:10.51.28.10,10.51.28.200");
+    sendResponse("[ERROR] Cu phap sai! Vi du: DHCP:10.51.31.10,10.51.31.200");
     return;
   }
 
@@ -1244,9 +1253,9 @@ void loadProfilesFromNvs() {
       6,
       "84:F1:47:4F:27:A0",
       "10.51.31.254",
-      "255.255.252.0",
-      "10.51.28.10",
-      "10.51.28.200"
+      "255.255.255.0",
+      "10.51.31.10",
+      "10.51.31.200"
     };
     profiles[1] = {
       "p2",
@@ -1256,13 +1265,25 @@ void loadProfilesFromNvs() {
       0, // Auto Channel
       "84:F1:47:4F:27:A0",
       "10.51.31.254",
-      "255.255.252.0",
-      "10.51.28.10",
-      "10.51.28.200"
+      "255.255.255.0",
+      "10.51.31.10",
+      "10.51.31.200"
     };
     saveProfilesToNvs();
   } else {
     deserializeProfiles(s);
+    bool changed = false;
+    for (int i = 0; i < profile_count; i++) {
+      if (profiles[i].ip == "10.51.31.254" && (profiles[i].dhcp_start.startsWith("10.51.28.") || profiles[i].subnet == "255.255.252.0")) {
+        profiles[i].dhcp_start = "10.51.31.10";
+        profiles[i].dhcp_end = "10.51.31.200";
+        profiles[i].subnet = "255.255.255.0";
+        changed = true;
+      }
+    }
+    if (changed) {
+      saveProfilesToNvs();
+    }
   }
 }
 
@@ -1395,7 +1416,7 @@ static esp_err_t _ota_http_event_handler(esp_http_client_event_t *evt) {
   return ESP_OK;
 }
 
-// Helper thực hiện tải JSON qua HTTPS bằng Native ESP-IDF esp_http_client (Bộ đệm chỉ 2KB thay vì 32KB mbedTLS)
+// Helper thực hiện tải JSON qua HTTPS bằng Native ESP-IDF esp_http_client (Bộ đệm chỉ 1KB thay vì 32KB mbedTLS)
 bool fetchOtaJson(const String &targetUrl, String &payloadOut, String &errOut) {
   logPrintf("[OTA] Kiem tra: %s (Free: %u | Max: %u)", targetUrl.c_str(), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
@@ -1405,9 +1426,9 @@ bool fetchOtaJson(const String &targetUrl, String &payloadOut, String &errOut) {
   config.crt_bundle_attach = esp_crt_bundle_attach;
   config.event_handler = _ota_http_event_handler;
   config.user_data = &responseBody;
-  config.buffer_size = 2048;
-  config.buffer_size_tx = 1024;
-  config.timeout_ms = 15000;
+  config.buffer_size = 1024;
+  config.buffer_size_tx = 512;
+  config.timeout_ms = 8000;
   config.skip_cert_common_name_check = true;
   config.addr_type = HTTP_ADDR_TYPE_INET;
   config.max_redirection_count = 5;
@@ -1467,26 +1488,19 @@ bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &e
     esp_netif_set_default_netif(sta_netif);
   }
 
-  // Bảo toàn DNS chính của router (DHCP). Nếu chưa có DNS thì mới gán fallback
-  const ip_addr_t *main_dns = dns_getserver(0);
-  if (main_dns == NULL || ip_addr_isany(main_dns)) {
-    ip_addr_t dns1;
-    IP_ADDR4(&dns1, 8, 8, 8, 8);
-    dns_setserver(0, &dns1);
-  }
-  const ip_addr_t *backup_dns = dns_getserver(1);
-  if (backup_dns == NULL || ip_addr_isany(backup_dns)) {
-    ip_addr_t dns2;
-    IP_ADDR4(&dns2, 1, 1, 1, 1);
-    dns_setserver(1, &dns2);
-  }
+  // Luôn cấu hình DNS máy chủ Google (8.8.8.8) và Cloudflare (1.1.1.1) trực tiếp để tránh bị nhà mạng chặn DNS
+  ip_addr_t dns1, dns2;
+  IP_ADDR4(&dns1, 8, 8, 8, 8);
+  IP_ADDR4(&dns2, 1, 1, 1, 1);
+  dns_setserver(0, &dns1);
+  dns_setserver(1, &dns2);
 
   String primaryUrl = ota_version_url;
   String mirrorUrl = "";
-  if (primaryUrl.startsWith("https://raw.githubusercontent.com/")) {
-    mirrorUrl = getJsdelivrMirrorUrl(primaryUrl);
-  } else if (primaryUrl.startsWith("https://cdn.jsdelivr.net/")) {
+  if (primaryUrl.indexOf("cdn.jsdelivr.net") >= 0) {
     mirrorUrl = getGithubRawUrl(primaryUrl);
+  } else {
+    mirrorUrl = getJsdelivrMirrorUrl(primaryUrl);
   }
 
   String payload = "";
@@ -1494,7 +1508,13 @@ bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &e
   if (!ok && mirrorUrl.length() > 0 && mirrorUrl != primaryUrl) {
     logPrintf("[OTA] Thu lai qua Mirror: %s", mirrorUrl.c_str());
     delay(200);
-    ok = fetchOtaJson(mirrorUrl, payload, errMsg);
+    String mirrorErr = "";
+    if (fetchOtaJson(mirrorUrl, payload, mirrorErr)) {
+      ok = true;
+      errMsg = "";
+    } else {
+      errMsg += " | Mirror: " + mirrorErr;
+    }
   }
 
   if (!ok) {
@@ -1594,25 +1614,19 @@ void performGithubOta(const String &binUrl) {
     esp_netif_set_default_netif(sta_netif);
   }
 
-  const ip_addr_t *main_dns = dns_getserver(0);
-  if (main_dns == NULL || ip_addr_isany(main_dns)) {
-    ip_addr_t dns1;
-    IP_ADDR4(&dns1, 8, 8, 8, 8);
-    dns_setserver(0, &dns1);
-  }
-  const ip_addr_t *backup_dns = dns_getserver(1);
-  if (backup_dns == NULL || ip_addr_isany(backup_dns)) {
-    ip_addr_t dns2;
-    IP_ADDR4(&dns2, 1, 1, 1, 1);
-    dns_setserver(1, &dns2);
-  }
+  // Luôn cấu hình DNS máy chủ Google (8.8.8.8) và Cloudflare (1.1.1.1) trực tiếp
+  ip_addr_t dns1, dns2;
+  IP_ADDR4(&dns1, 8, 8, 8, 8);
+  IP_ADDR4(&dns2, 1, 1, 1, 1);
+  dns_setserver(0, &dns1);
+  dns_setserver(1, &dns2);
 
   String primaryBinUrl = binUrl;
   String mirrorBinUrl = "";
-  if (primaryBinUrl.startsWith("https://raw.githubusercontent.com/")) {
-    mirrorBinUrl = getJsdelivrMirrorUrl(primaryBinUrl);
-  } else if (primaryBinUrl.startsWith("https://cdn.jsdelivr.net/")) {
+  if (primaryBinUrl.indexOf("cdn.jsdelivr.net") >= 0) {
     mirrorBinUrl = getGithubRawUrl(primaryBinUrl);
+  } else {
+    mirrorBinUrl = getJsdelivrMirrorUrl(primaryBinUrl);
   }
 
   bool ok = executeOtaDownload(primaryBinUrl);
@@ -1744,12 +1758,11 @@ void configureSoftApDhcp(bool randomizePool) {
     if (s_ip.fromString(dhcp_start_str) && e_ip.fromString(dhcp_end_str) && 
         gw_ip.fromString(ap_ip_str) && sub_ip.fromString(ap_subnet_str)) {
 
-      // Tu dong kiem tra va dong bo Subnet Mask /22 (255.255.252.0) va dai IP 10.51.28.x
-      if (ap_subnet_str == "255.255.255.0" || dhcp_start_str.startsWith("10.51.31.") || 
-          (((uint32_t)s_ip & (uint32_t)sub_ip) != ((uint32_t)gw_ip & (uint32_t)sub_ip))) {
-        ap_subnet_str = "255.255.252.0";
-        dhcp_start_str = "10.51.28.10";
-        dhcp_end_str = "10.51.28.200";
+      // Tự động kiểm tra và đảm bảo Subnet Mask /24 (255.255.255.0) và dải IP cùng subnet với Gateway IP
+      if (s_ip[0] != gw_ip[0] || s_ip[1] != gw_ip[1] || s_ip[2] != gw_ip[2] || ap_subnet_str == "255.255.252.0") {
+        ap_subnet_str = "255.255.255.0";
+        dhcp_start_str = String(gw_ip[0]) + "." + String(gw_ip[1]) + "." + String(gw_ip[2]) + ".10";
+        dhcp_end_str   = String(gw_ip[0]) + "." + String(gw_ip[1]) + "." + String(gw_ip[2]) + ".200";
         sub_ip.fromString(ap_subnet_str);
         s_ip.fromString(dhcp_start_str);
         e_ip.fromString(dhcp_end_str);
@@ -1758,14 +1771,14 @@ void configureSoftApDhcp(bool randomizePool) {
         prefs.putString("dhcp_start", dhcp_start_str);
         prefs.putString("dhcp_end", dhcp_end_str);
         prefs.end();
-        Serial.println("[DHCP] Tu dong dong bo Subnet Mask thanh 255.255.252.0 (/22) va dai IP 10.51.28.10-200!");
-        addLogToBuffer("[DHCP] Tu dong dong bo Subnet Mask thanh 255.255.252.0 (/22) va dai IP 10.51.28.10-200!");
+        Serial.println("[DHCP] Tu dong dong bo Subnet Mask thanh 255.255.255.0 (/24) va dai IP " + dhcp_start_str + " -> " + dhcp_end_str);
+        addLogToBuffer("[DHCP] Tu dong dong bo Subnet Mask thanh 255.255.255.0 (/24) va dai IP " + dhcp_start_str + " -> " + dhcp_end_str);
       }
 
       // 1. Tạm dừng DHCPS để cài đặt thông số IP info và DHCP options
       esp_netif_dhcps_stop(ap_netif);
 
-      // 2. Cấu hình IP và Subnet Mask /22 trực tiếp qua ESP-IDF (bỏ qua giới hạn CIDR của wrapper Arduino)
+      // 2. Cấu hình IP và Subnet Mask /24 trực tiếp qua ESP-IDF
       bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
       esp_netif_ip_info_t ip_info;
       ip_info.ip.addr = (uint32_t)gw_ip;
@@ -2311,6 +2324,14 @@ void handleApiSaveAp() {
     if (server.hasArg("dhcp_start")) dhcp_start_str = server.arg("dhcp_start");
     if (server.hasArg("dhcp_end")) dhcp_end_str = server.arg("dhcp_end");
 
+    IPAddress testGw, testStart;
+    if (testGw.fromString(ap_ip_str)) {
+      if (!testStart.fromString(dhcp_start_str) || testStart[0] != testGw[0] || testStart[1] != testGw[1] || testStart[2] != testGw[2]) {
+        dhcp_start_str = String(testGw[0]) + "." + String(testGw[1]) + "." + String(testGw[2]) + ".10";
+        dhcp_end_str   = String(testGw[0]) + "." + String(testGw[1]) + "." + String(testGw[2]) + ".200";
+      }
+    }
+
     prefs.begin("gateway", false);
     prefs.putString("ap_ssid", ap_ssid);
     prefs.putString("ap_pass", ap_password);
@@ -2524,14 +2545,14 @@ void handleApiCloneStaToProfile() {
   String s_gw = gw.toString();
   if (s_gw == "0.0.0.0") s_gw = "10.51.31.254";
 
-  IPAddress sub = connected ? WiFi.subnetMask() : IPAddress(255, 255, 252, 0);
+  IPAddress sub = connected ? WiFi.subnetMask() : IPAddress(255, 255, 255, 0);
   String s_sub = sub.toString();
-  if (s_sub == "0.0.0.0") s_sub = "255.255.252.0";
+  if (s_sub == "0.0.0.0") s_sub = "255.255.255.0";
 
   int s_ch = connected ? WiFi.channel() : ap_channel;
 
   // Dải IP DHCP theo quy tắc giống IP được cấp khi kết nối với Wi-Fi nguồn
-  IPAddress my_ip = connected ? WiFi.localIP() : IPAddress(10, 51, 28, 100);
+  IPAddress my_ip = connected ? WiFi.localIP() : IPAddress(10, 51, 31, 100);
   String prefix = String(my_ip[0]) + "." + String(my_ip[1]) + "." + String(my_ip[2]) + ".";
   String s_dhcp_start = prefix + "10";
   String s_dhcp_end = prefix + "200";
@@ -2616,9 +2637,9 @@ void setup() {
   }
   ap_bssid_str   = prefs.getString("ap_bssid", "84:F1:47:4F:27:A0");
   ap_ip_str      = prefs.getString("ap_ip", "10.51.31.254");
-  ap_subnet_str  = prefs.getString("ap_subnet", "255.255.252.0");
-  dhcp_start_str = prefs.getString("dhcp_start", "10.51.28.10");
-  dhcp_end_str   = prefs.getString("dhcp_end", "10.51.28.200"); // Dải IP cấp ngẫu nhiên 10.51.28.x
+  ap_subnet_str  = prefs.getString("ap_subnet", "255.255.255.0");
+  dhcp_start_str = prefs.getString("dhcp_start", "10.51.31.10");
+  dhcp_end_str   = prefs.getString("dhcp_end", "10.51.31.200"); // Dải IP cấp ngẫu nhiên 10.51.31.x cùng subnet Gateway
   tx_power_boost = prefs.getBool("tx_boost", false);            // Mặc định KHÔNG BẬT (15 dBm Standard)
   ble_enabled     = prefs.getBool("ble_en", true);               // Bật sóng Bluetooth LE
   ble_pin         = prefs.getUInt("ble_pin", 123456);             // Mã PIN ghép đôi 6 số (123456)
@@ -2626,20 +2647,19 @@ void setup() {
     ble_pin = 123456;
     prefs.putUInt("ble_pin", 123456);
   }
-  ota_version_url = prefs.getString("ota_url", "https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/version.json");
-  if (ota_version_url.indexOf("cdn.jsdelivr.net") >= 0) {
-    ota_version_url = "https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/version.json";
-    prefs.putString("ota_url", ota_version_url);
-  }
+  ota_version_url = prefs.getString("ota_url", "https://cdn.jsdelivr.net/gh/silversymphony/esp32-firmware@main/version.json");
 
-  // Tu dong dong bo Subnet Mask /22 (255.255.252.0) va dai IP 10.51.28.x neu NVS luu cu
-  if (ap_subnet_str == "255.255.255.0" || dhcp_start_str.startsWith("10.51.31.")) {
-    ap_subnet_str = "255.255.252.0";
-    dhcp_start_str = "10.51.28.10";
-    dhcp_end_str = "10.51.28.200";
-    prefs.putString("ap_subnet", ap_subnet_str);
-    prefs.putString("dhcp_start", dhcp_start_str);
-    prefs.putString("dhcp_end", dhcp_end_str);
+  // Tự động đồng bộ Subnet Mask /24 (255.255.255.0) và dải IP cùng subnet với Gateway IP
+  IPAddress check_gw, check_s;
+  if (check_gw.fromString(ap_ip_str) && check_s.fromString(dhcp_start_str)) {
+    if (check_gw[0] != check_s[0] || check_gw[1] != check_s[1] || check_gw[2] != check_s[2] || ap_subnet_str == "255.255.252.0") {
+      ap_subnet_str = "255.255.255.0";
+      dhcp_start_str = String(check_gw[0]) + "." + String(check_gw[1]) + "." + String(check_gw[2]) + ".10";
+      dhcp_end_str   = String(check_gw[0]) + "." + String(check_gw[1]) + "." + String(check_gw[2]) + ".200";
+      prefs.putString("ap_subnet", ap_subnet_str);
+      prefs.putString("dhcp_start", dhcp_start_str);
+      prefs.putString("dhcp_end", dhcp_end_str);
+    }
   }
   prefs.end();
 

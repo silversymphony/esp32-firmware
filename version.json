@@ -1,5 +1,5 @@
 {
   "version": "1.3.8",
-  "url": "https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/esp32_v1.3.8/esp32_v1.3.8.ino.bin",
-  "changelog": "Bản phát hành v1.3.8: Tự động cấp phát Router Default Gateway (10.51.31.254) và DNS khi có Internet Wi-Fi nguồn giúp điện thoại kết nối vào có mạng Internet bình thường, tự ngắt Gateway khi tắt Wi-Fi nguồn để điện thoại duy trì 5G; sửa dứt điểm lỗi kiểm tra OTA bằng kết nối trực tiếp TLS IPv4 loại bỏ AAAA IPv6, tối ưu hóa bộ nhớ heap cho TLS handshake; mã PIN BLE mặc định 123456, mặc định tắt Wi-Fi nguồn lần đầu."
+  "url": "https://cdn.jsdelivr.net/gh/silversymphony/esp32-firmware@main/esp32_v1.3.8/esp32_v1.3.8.ino.bin",
+  "changelog": "Bản phát hành v1.3.8: Tự động đồng bộ Gateway Manager (10.51.31.254) cùng dải Subnet /24 (255.255.255.0) với DHCP Pool (10.51.31.10 - 200), khắc phục triệt để lỗi không truy cập được Gateway Manager khi điện thoại dùng 5G; sửa lỗi kiểm tra OTA báo connect bằng CDN jsDelivr kết hợp dự phòng GitHub và DNS trực tiếp Google 8.8.8.8 / Cloudflare 1.1.1.1; mã PIN BLE mặc định 123456, mặc định tắt Wi-Fi nguồn lần đầu."
 }

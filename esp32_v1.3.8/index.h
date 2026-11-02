@@ -209,7 +209,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         </div>
         <div class="info-box" style="grid-column: span 2;">
           <div class="info-label" id="lblDhcpPool">Cấp IP Ngẫu Nhiên Mỗi Lần Kết Nối (Random DHCP)</div>
-          <div class="info-val" style="color: #a7f3d0;" id="valDhcpPool">10.51.28.10  ➔  10.51.28.200 (Ngẫu nhiên)</div>
+          <div class="info-val" style="color: #a7f3d0;" id="valDhcpPool">10.51.31.10  ➔  10.51.31.200 (Ngẫu nhiên)</div>
         </div>
       </div>
     </div>
@@ -418,7 +418,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         </div>
         <div class="form-group">
           <label id="lblInputApSubnet">Subnet Mask</label>
-          <input type="text" id="apSubnetInput" placeholder="255.255.252.0">
+          <input type="text" id="apSubnetInput" placeholder="255.255.255.0">
         </div>
       </div>
 
@@ -427,11 +427,11 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         <div class="grid-2">
           <div>
             <span id="lblDhcpStart" style="font-size: 10px; color: var(--text-muted);">Bắt đầu:</span>
-            <input type="text" id="dhcpStartInput" placeholder="10.51.28.10">
+            <input type="text" id="dhcpStartInput" placeholder="10.51.31.10">
           </div>
           <div>
             <span id="lblDhcpEnd" style="font-size: 10px; color: var(--text-muted);">Kết thúc:</span>
-            <input type="text" id="dhcpEndInput" placeholder="10.51.28.200">
+            <input type="text" id="dhcpEndInput" placeholder="10.51.31.200">
           </div>
         </div>
       </div>
@@ -949,10 +949,10 @@ function renderStatus(d) {
     document.getElementById('valApChannelBadge').innerText = (currentLang === 'en' ? 'CH ' : 'KÊNH ') + (d.ap_channel || 6);
   }
   document.getElementById('valApIp').innerText = d.ap_ip || '10.51.31.254';
-  document.getElementById('valApSubnet').innerText = d.ap_subnet || '255.255.252.0';
+  document.getElementById('valApSubnet').innerText = d.ap_subnet || '255.255.255.0';
   
-  var dStart = d.dhcp_start || '10.51.28.10';
-  var dEnd = d.dhcp_end || '10.51.28.200';
+  var dStart = d.dhcp_start || '10.51.31.10';
+  var dEnd = d.dhcp_end || '10.51.31.200';
   document.getElementById('valDhcpPool').innerText = dStart + '  ➔  ' + dEnd + (currentLang === 'en' ? ' (Random)' : ' (Ngẫu nhiên)');
 
   // Cập nhật trạng thái Max TX Power Boost
@@ -1025,9 +1025,9 @@ function renderStatus(d) {
   if (!document.getElementById('apPassInput').value && d.ap_pass) document.getElementById('apPassInput').value = d.ap_pass;
   if (!document.getElementById('apBssidInput').value) document.getElementById('apBssidInput').value = d.ap_bssid || '';
   if (!document.getElementById('apIpInput').value) document.getElementById('apIpInput').value = d.ap_ip || '';
-  if (!document.getElementById('apSubnetInput').value) document.getElementById('apSubnetInput').value = d.ap_subnet || '255.255.252.0';
-  if (!document.getElementById('dhcpStartInput').value) document.getElementById('dhcpStartInput').value = d.dhcp_start || '10.51.28.10';
-  if (!document.getElementById('dhcpEndInput').value) document.getElementById('dhcpEndInput').value = d.dhcp_end || '10.51.28.200';
+  if (!document.getElementById('apSubnetInput').value) document.getElementById('apSubnetInput').value = d.ap_subnet || '255.255.255.0';
+  if (!document.getElementById('dhcpStartInput').value) document.getElementById('dhcpStartInput').value = d.dhcp_start || '10.51.31.10';
+  if (!document.getElementById('dhcpEndInput').value) document.getElementById('dhcpEndInput').value = d.dhcp_end || '10.51.31.200';
   if (d.ap_channel !== undefined) document.getElementById('apChannelSelect').value = d.ap_channel;
 }
 
@@ -1542,8 +1542,8 @@ function loadProfileToForm(silent) {
   document.getElementById('apBssidInput').value = p.bssid || '';
   document.getElementById('apIpInput').value = p.ip || '';
   document.getElementById('apSubnetInput').value = p.subnet || '';
-  document.getElementById('dhcpStartInput').value = p.dhcp_start || '10.51.28.10';
-  document.getElementById('dhcpEndInput').value = p.dhcp_end || '10.51.28.200';
+  document.getElementById('dhcpStartInput').value = p.dhcp_start || '10.51.31.10';
+  document.getElementById('dhcpEndInput').value = p.dhcp_end || '10.51.31.200';
   if (!silent) {
     alert((currentLang === 'en' ? 'Loaded parameters from preset "' : 'Đã nạp toàn bộ thông số của mẫu "') + p.name + '"!\n' + 
           (currentLang === 'en' ? 'You can edit below and click "Save Update" to update this preset.' : 'Bạn có thể chỉnh sửa bên dưới rồi bấm "Lưu Cập Nhật" để lưu lại vào mẫu này.'));
@@ -1596,8 +1596,8 @@ function updateSelectedProfile() {
   data.append('bssid', document.getElementById('apBssidInput').value);
   data.append('ip', document.getElementById('apIpInput').value);
   data.append('subnet', document.getElementById('apSubnetInput').value);
-  data.append('dhcp_start', document.getElementById('dhcpStartInput').value || '10.51.28.10');
-  data.append('dhcp_end', document.getElementById('dhcpEndInput').value || '10.51.28.200');
+  data.append('dhcp_start', document.getElementById('dhcpStartInput').value || '10.51.31.10');
+  data.append('dhcp_end', document.getElementById('dhcpEndInput').value || '10.51.31.200');
 
   fetch('/api/save_profile', { method: 'POST', body: data })
     .then(function(res) { return res.json(); })
@@ -1652,8 +1652,8 @@ function saveCurrentAsNewProfile() {
   data.append('bssid', document.getElementById('apBssidInput').value);
   data.append('ip', document.getElementById('apIpInput').value);
   data.append('subnet', document.getElementById('apSubnetInput').value);
-  data.append('dhcp_start', document.getElementById('dhcpStartInput').value || '10.51.28.10');
-  data.append('dhcp_end', document.getElementById('dhcpEndInput').value || '10.51.28.200');
+  data.append('dhcp_start', document.getElementById('dhcpStartInput').value || '10.51.31.10');
+  data.append('dhcp_end', document.getElementById('dhcpEndInput').value || '10.51.31.200');
 
   fetch('/api/save_profile', { method: 'POST', body: data })
     .then(function(res) { return res.json(); })
@@ -1718,7 +1718,7 @@ function cloneStaToPreset() {
       var sSub = (lastStatusData && lastStatusData.sta_subnet) ? lastStatusData.sta_subnet : '255.255.255.0';
       var sIp = (lastStatusData && lastStatusData.sta_ip) ? lastStatusData.sta_ip : '192.168.1.100';
       var parts = sIp.split('.');
-      var prefix = (parts.length >= 3) ? (parts[0] + '.' + parts[1] + '.' + parts[2] + '.') : '10.51.28.';
+      var prefix = (parts.length >= 3) ? (parts[0] + '.' + parts[1] + '.' + parts[2] + '.') : '10.51.31.';
       var dStart = prefix + '10';
       var dEnd = prefix + '200';
 

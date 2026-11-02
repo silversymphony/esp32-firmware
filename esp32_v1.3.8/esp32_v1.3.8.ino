@@ -54,6 +54,8 @@ extern "C" {
 #include <lwip/ip4_addr.h>
 #include <lwip/dns.h>
 #include <lwip/tcpip.h>
+#include <lwip/sockets.h>
+#include <lwip/netdb.h>
 #include <WiFiUdp.h>
 #include <Update.h>
 #include <ESPmDNS.h>
@@ -1379,41 +1381,123 @@ String getGithubRawUrl(const String &url) {
   return url;
 }
 
+// Tách chuỗi URL HTTPS thành host, port và path
+bool parseHttpsUrl(const String &url, String &hostOut, uint16_t &portOut, String &pathOut) {
+  if (!url.startsWith("https://")) return false;
+  String rest = url.substring(8);
+  int slashIdx = rest.indexOf('/');
+  String hostPort = (slashIdx >= 0) ? rest.substring(0, slashIdx) : rest;
+  pathOut = (slashIdx >= 0) ? rest.substring(slashIdx) : "/";
+
+  int colonIdx = hostPort.indexOf(':');
+  if (colonIdx >= 0) {
+    hostOut = hostPort.substring(0, colonIdx);
+    portOut = hostPort.substring(colonIdx + 1).toInt();
+  } else {
+    hostOut = hostPort;
+    portOut = 443;
+  }
+  return (hostOut.length() > 0);
+}
+
+// Phân giải DNS ép buộc theo chuẩn IPv4 (tránh hoàn toàn lỗi IPv6 không có gateway route trên ESP32)
+bool resolveHostIPv4(const char *hostname, IPAddress &result) {
+  struct addrinfo hints;
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_INET; // BẮT BUỘC IPv4, loại bỏ AAAA IPv6
+  hints.ai_socktype = SOCK_STREAM;
+  struct addrinfo *res = NULL;
+  int err = lwip_getaddrinfo(hostname, "443", &hints, &res);
+  if (err == 0 && res != NULL) {
+    struct sockaddr_in *saddr = (struct sockaddr_in *)res->ai_addr;
+    result = IPAddress(saddr->sin_addr.s_addr);
+    lwip_freeaddrinfo(res);
+    return true;
+  }
+  if (res != NULL) lwip_freeaddrinfo(res);
+  return false;
+}
+
 // Helper thực hiện tải JSON qua HTTPS
 bool fetchOtaJson(const String &targetUrl, String &payloadOut, String &errOut) {
-  logPrintf("[OTA] Dang kiem tra version tu: %s", targetUrl.c_str());
-  WiFiClientSecure client;
-  client.setInsecure();
-  client.setTimeout(15000);
-  client.setHandshakeTimeout(15000);
+  logPrintf("[OTA] Dang kiem tra version tu: %s (Free Heap: %u bytes)", targetUrl.c_str(), ESP.getFreeHeap());
 
-  HTTPClient http;
-  http.setUserAgent("ESP32-Gateway-OTA/1.3.8");
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setConnectTimeout(15000);
-  http.setTimeout(15000);
-  http.setReuse(false);
-
-  if (!http.begin(client, targetUrl)) {
-    client.stop();
-    errOut = "Khong the khoi tao HTTPS den " + targetUrl;
+  String host, path;
+  uint16_t port = 443;
+  if (!parseHttpsUrl(targetUrl, host, port, path)) {
+    errOut = "URL khong hop le (can bat dau bang https://): " + targetUrl;
     return false;
   }
 
-  int httpCode = http.GET();
-  if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY || httpCode == HTTP_CODE_FOUND) {
-    payloadOut = http.getString();
-    http.end();
-    client.stop();
-    return true;
-  } else {
-    char sslErr[100] = {0};
-    client.lastError(sslErr, sizeof(sslErr));
-    String detail = (sslErr[0] != 0) ? String(" | SSL: ") + sslErr : "";
-    errOut = "Loi ket noi: " + http.errorToString(httpCode) + " (" + String(httpCode) + ")" + detail;
-    logPrintf("[OTA-LOI] Ket noi %s that bai: %s", targetUrl.c_str(), errOut.c_str());
-    http.end();
-    client.stop();
+  // 1. Phân giải DNS IPv4 an toàn
+  IPAddress hostIp;
+  if (!resolveHostIPv4(host.c_str(), hostIp)) {
+    errOut = "Loi DNS IPv4: Khong the phan giai ten mien " + host;
+    logPrintf("[OTA-LOI] %s", errOut.c_str());
+    return false;
+  }
+  logPrintf("[OTA] DNS IPv4 thanh cong: %s -> %s", host.c_str(), hostIp.toString().c_str());
+
+  if (ESP.getFreeHeap() < 20000) {
+    errOut = "Khong du bo nho RAM (con " + String(ESP.getFreeHeap()) + " bytes) de khoi tao SSL!";
+    logPrintf("[OTA-LOI] %s", errOut.c_str());
+    return false;
+  }
+
+  try {
+    WiFiClientSecure client;
+    client.setInsecure();
+    client.setTimeout(15000);
+    client.setHandshakeTimeout(15000);
+
+    // 2. Kết nối trực tiếp socket tới IPv4 với SNI hostname để bảo đảm định tuyến đúng qua STA
+    if (!client.connect(hostIp, port, host.c_str(), NULL, NULL, NULL)) {
+      char sslErr[100] = {0};
+      client.lastError(sslErr, sizeof(sslErr));
+      String detail = (sslErr[0] != 0) ? String(" | SSL: ") + sslErr : "";
+      errOut = "Loi ket noi TLS toi " + hostIp.toString() + detail;
+      logPrintf("[OTA-LOI] %s", errOut.c_str());
+      client.stop();
+      return false;
+    }
+
+    HTTPClient http;
+    http.setUserAgent("ESP32-Gateway-OTA/1.3.8");
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    http.setConnectTimeout(15000);
+    http.setTimeout(15000);
+    http.setReuse(true);
+
+    // 3. Khởi tạo HTTPClient với client đã kết nối sẵn qua IPv4
+    if (!http.begin(client, host, port, path, true)) {
+      client.stop();
+      errOut = "Khong the khoi tao HTTPClient voi " + targetUrl;
+      return false;
+    }
+
+    int httpCode = http.GET();
+    if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY || httpCode == HTTP_CODE_FOUND) {
+      payloadOut = http.getString();
+      http.end();
+      client.stop();
+      return true;
+    } else {
+      char sslErr[100] = {0};
+      client.lastError(sslErr, sizeof(sslErr));
+      String detail = (sslErr[0] != 0) ? String(" | SSL: ") + sslErr : "";
+      errOut = "Loi ket noi: " + http.errorToString(httpCode) + " (" + String(httpCode) + ")" + detail;
+      logPrintf("[OTA-LOI] Ket noi %s that bai: %s", targetUrl.c_str(), errOut.c_str());
+      http.end();
+      client.stop();
+      return false;
+    }
+  } catch (const std::exception &e) {
+    errOut = "Loi bo nho (std::exception): " + String(e.what());
+    logPrintf("[OTA-LOI] %s", errOut.c_str());
+    return false;
+  } catch (...) {
+    errOut = "Loi thieu bo nho RAM cap phat SSL (Out of Memory)!";
+    logPrintf("[OTA-LOI] %s", errOut.c_str());
     return false;
   }
 }
@@ -1460,7 +1544,8 @@ bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &e
   String payload = "";
   bool ok = fetchOtaJson(primaryUrl, payload, errMsg);
   if (!ok && mirrorUrl.length() > 0 && mirrorUrl != primaryUrl) {
-    logPrintf("[OTA] Thu lai qua CDN Mirror: %s", mirrorUrl.c_str());
+    logPrintf("[OTA] Thu lai qua Mirror: %s", mirrorUrl.c_str());
+    delay(200);
     ok = fetchOtaJson(mirrorUrl, payload, errMsg);
   }
 
@@ -1483,85 +1568,117 @@ bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &e
 
 // Helper thực hiện tải firmware và ghi Flash
 bool executeOtaDownload(const String &dlUrl) {
-  logPrintf("[OTA] Bat dau tai firmware tu: %s", dlUrl.c_str());
-  WiFiClientSecure client;
-  client.setInsecure();
-  client.setTimeout(30000);
-  client.setHandshakeTimeout(30000);
+  logPrintf("[OTA] Bat dau tai firmware tu: %s (Free Heap: %u bytes)", dlUrl.c_str(), ESP.getFreeHeap());
 
-  HTTPClient http;
-  http.setUserAgent("ESP32-Gateway-OTA/1.3.8");
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setConnectTimeout(30000);
-  http.setTimeout(30000);
-  http.setReuse(false);
-
-  if (!http.begin(client, dlUrl)) {
-    client.stop();
-    logPrintf("[OTA-LOI] Khong the khoi tao HTTPS den %s", dlUrl.c_str());
+  String host, path;
+  uint16_t port = 443;
+  if (!parseHttpsUrl(dlUrl, host, port, path)) {
+    logPrintf("[OTA-LOI] URL firmware khong hop le: %s", dlUrl.c_str());
     return false;
   }
 
-  int httpCode = http.GET();
-  logPrintf("[OTA] Ma phan hoi HTTP: %d", httpCode);
-
-  if (httpCode != HTTP_CODE_OK && httpCode != HTTP_CODE_MOVED_PERMANENTLY && httpCode != HTTP_CODE_FOUND) {
-    char sslErr[100] = {0};
-    client.lastError(sslErr, sizeof(sslErr));
-    String detail = (sslErr[0] != 0) ? String(" | SSL: ") + sslErr : "";
-    logPrintf("[OTA-LOI] May chu tra ve ma loi: %d (%s)%s", httpCode, http.errorToString(httpCode).c_str(), detail.c_str());
-    http.end();
-    client.stop();
+  IPAddress hostIp;
+  if (!resolveHostIPv4(host.c_str(), hostIp)) {
+    logPrintf("[OTA-LOI] Loi DNS IPv4 cho %s", host.c_str());
     return false;
   }
+  logPrintf("[OTA] DNS IPv4 thanh cong: %s -> %s", host.c_str(), hostIp.toString().c_str());
 
-  int contentLength = http.getSize();
-  logPrintf("[OTA] Kich thuoc Firmware: %d bytes (%.2f MB)", contentLength, (float)contentLength / (1024.0 * 1024.0));
+  try {
+    WiFiClientSecure client;
+    client.setInsecure();
+    client.setTimeout(30000);
+    client.setHandshakeTimeout(30000);
 
-  if (contentLength <= 0) {
-    logMessage("[OTA-LOI] Khong xac dinh duoc kich thuoc file (Content-Length <= 0)!");
-    http.end();
-    client.stop();
-    return false;
-  }
-
-  if (!Update.begin(contentLength)) {
-    logPrintf("[OTA-LOI] Khong the khoi dong Update Flash (Ma loi: %d)", Update.getError());
-    http.end();
-    client.stop();
-    return false;
-  }
-
-  Update.onProgress([](size_t cur, size_t total) {
-    static int prevPercent = -1;
-    int percent = (cur * 100) / total;
-    if (percent != prevPercent && (percent % 10 == 0 || percent == 100)) {
-      prevPercent = percent;
-      logPrintf("[OTA] Ghi Flash: %d%% (%u / %u bytes)", percent, cur, total);
+    if (!client.connect(hostIp, port, host.c_str(), NULL, NULL, NULL)) {
+      char sslErr[100] = {0};
+      client.lastError(sslErr, sizeof(sslErr));
+      String detail = (sslErr[0] != 0) ? String(" | SSL: ") + sslErr : "";
+      logPrintf("[OTA-LOI] Ket noi TLS toi %s that bai%s", hostIp.toString().c_str(), detail.c_str());
+      client.stop();
+      return false;
     }
-  });
 
-  WiFiClient *stream = http.getStreamPtr();
-  size_t written = Update.writeStream(*stream);
+    HTTPClient http;
+    http.setUserAgent("ESP32-Gateway-OTA/1.3.8");
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    http.setConnectTimeout(30000);
+    http.setTimeout(30000);
+    http.setReuse(true);
 
-  if (Update.end()) {
-    if (Update.isFinished()) {
-      logMessage("[OTA] 🎉 Nap Flash thanh cong 100%! Dang khoi dong lai vao Firmware moi...");
+    if (!http.begin(client, host, port, path, true)) {
+      client.stop();
+      logPrintf("[OTA-LOI] Khong the khoi tao HTTPClient den %s", dlUrl.c_str());
+      return false;
+    }
+
+    int httpCode = http.GET();
+    logPrintf("[OTA] Ma phan hoi HTTP: %d", httpCode);
+
+    if (httpCode != HTTP_CODE_OK && httpCode != HTTP_CODE_MOVED_PERMANENTLY && httpCode != HTTP_CODE_FOUND) {
+      char sslErr[100] = {0};
+      client.lastError(sslErr, sizeof(sslErr));
+      String detail = (sslErr[0] != 0) ? String(" | SSL: ") + sslErr : "";
+      logPrintf("[OTA-LOI] May chu tra ve ma loi: %d (%s)%s", httpCode, http.errorToString(httpCode).c_str(), detail.c_str());
       http.end();
       client.stop();
-      delay(1000);
-      ESP.restart();
-      return true;
-    } else {
-      logPrintf("[OTA-LOI] Ghi Flash chua hoan tat day du! Da ghi: %u / %d bytes", written, contentLength);
+      return false;
     }
-  } else {
-    logPrintf("[OTA-LOI] Loi ket thuc Update (Ma loi: %d)", Update.getError());
-  }
 
-  http.end();
-  client.stop();
-  return false;
+    int contentLength = http.getSize();
+    logPrintf("[OTA] Kich thuoc Firmware: %d bytes (%.2f MB)", contentLength, (float)contentLength / (1024.0 * 1024.0));
+
+    if (contentLength <= 0) {
+      logMessage("[OTA-LOI] Khong xac dinh duoc kich thuoc file (Content-Length <= 0)!");
+      http.end();
+      client.stop();
+      return false;
+    }
+
+    if (!Update.begin(contentLength)) {
+      logPrintf("[OTA-LOI] Khong the khoi dong Update Flash (Ma loi: %d)", Update.getError());
+      http.end();
+      client.stop();
+      return false;
+    }
+
+    Update.onProgress([](size_t cur, size_t total) {
+      static int prevPercent = -1;
+      int percent = (cur * 100) / total;
+      if (percent != prevPercent && (percent % 10 == 0 || percent == 100)) {
+        prevPercent = percent;
+        logPrintf("[OTA] Ghi Flash: %d%% (%u / %u bytes)", percent, cur, total);
+      }
+    });
+
+    WiFiClient *stream = http.getStreamPtr();
+    size_t written = Update.writeStream(*stream);
+
+    if (Update.end()) {
+      if (Update.isFinished()) {
+        logMessage("[OTA] 🎉 Nap Flash thanh cong 100%! Dang khoi dong lai vao Firmware moi...");
+        http.end();
+        client.stop();
+        delay(1000);
+        ESP.restart();
+        return true;
+      } else {
+        logPrintf("[OTA-LOI] Ghi Flash chua hoan tat day du! Da ghi: %u / %d bytes", written, contentLength);
+      }
+    } else {
+      logPrintf("[OTA-LOI] Loi ket thuc Update (Ma loi: %d)", Update.getError());
+    }
+
+    http.end();
+    client.stop();
+    return false;
+  } catch (const std::exception &e) {
+    logPrintf("[OTA-LOI] Ngoai le: %s", e.what());
+    return false;
+  } catch (...) {
+    logMessage("[OTA-LOI] Loi bo nho RAM khi tai firmware!");
+    return false;
+  }
 }
 
 // Tải file firmware .bin từ GitHub/CDN và nạp vào phân vùng OTA của bộ nhớ Flash
@@ -1751,10 +1868,11 @@ void configureSoftApDhcp(bool randomizePool) {
       esp_netif_dhcps_stop(ap_netif);
 
       // 2. Cấu hình IP và Subnet Mask /22 trực tiếp qua ESP-IDF (bỏ qua giới hạn CIDR của wrapper Arduino)
+      bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
       esp_netif_ip_info_t ip_info;
       ip_info.ip.addr = (uint32_t)gw_ip;
       ip_info.netmask.addr = (uint32_t)sub_ip;
-      ip_info.gw.addr = 0; // SoftAP interface luôn đặt gw = 0.0.0.0 (Gateway cấp cho client qua DHCP Option 3)
+      ip_info.gw.addr = has_uplink ? (uint32_t)gw_ip : 0; // Khi có Internet STA: Gateway = gw_ip để DHCP cấp Option 3 cho client; Khi tắt STA: Gateway = 0.0.0.0 để điện thoại dùng 5G
       esp_netif_set_ip_info(ap_netif, &ip_info);
 
       uint32_t s_u32 = ipToU32(s_ip);
@@ -2062,6 +2180,7 @@ void handleApiStatus() {
   json += "\"uptime\":" + String(millis() / 1000);
   json += "}";
 
+  server.sendHeader("Connection", "close");
   server.send(200, "application/json", json);
 }
 
@@ -2078,7 +2197,8 @@ void handleApiPowerBoost() {
     applyTxPower(tx_power_boost);
 
     String json = "{\"success\":true,\"tx_boost\":" + String(tx_power_boost ? "true" : "false") + "}";
-    server.send(200, "application/json", json);
+    server.sendHeader("Connection", "close");
+  server.send(200, "application/json", json);
   } else {
     server.send(400, "application/json", "{\"error\":\"Thieu tham so boost\"}");
   }
@@ -2115,12 +2235,14 @@ void handleApiSaveBle() {
   json += "\"ble_enabled\":" + String(ble_enabled ? "true" : "false") + ",";
   json += "\"ble_pin\":\"" + String(pinStr) + "\"";
   json += "}";
+  server.sendHeader("Connection", "close");
   server.send(200, "application/json", json);
 }
 
 // Tuần tự hóa bộ đệm nhật ký hệ thống ra chuỗi JSON
 String serializeLogsJson() {
   String json = "[";
+  json.reserve(logCount * 60 + 10);
   int start = (logCount < LOG_BUFFER_SIZE) ? 0 : logHead;
   for (int i = 0; i < logCount; i++) {
     int idx = (start + i) % LOG_BUFFER_SIZE;
@@ -2138,6 +2260,7 @@ String serializeLogsJson() {
 
 // API: Lấy danh sách các dòng log gần nhất
 void handleApiLogs() {
+  server.sendHeader("Connection", "close");
   server.send(200, "application/json", serializeLogsJson());
 }
 
@@ -2212,7 +2335,8 @@ void handleApiScan() {
     cached_scan_json = json;
     last_scan_time = millis();
     logPrintf("[SCAN] Quet xong! Tim thay %d mang Wi-Fi.", scanStatus);
-    server.send(200, "application/json", json);
+    server.sendHeader("Connection", "close");
+  server.send(200, "application/json", json);
     return;
   }
 
@@ -2328,14 +2452,15 @@ void handleApiSaveAp() {
   }
 }
 
-// API: Kích hoạt kiểm tra bản cập nhật mới từ GitHub (bất đồng bộ qua FreeRTOS Task riêng trên Core 0)
+// API: Kích hoạt kiểm tra bản cập nhật mới từ GitHub (bất đồng bộ qua loopTask)
 void handleApiCheckOta() {
+  server.sendHeader("Connection", "close");
   if (WiFi.status() != WL_CONNECTED) {
     server.send(200, "application/json", "{\"success\":false,\"error\":\"ESP32 chua ket noi Wi-Fi nguon (Internet)!\"}");
     return;
   }
   if (ota_version_url.length() == 0) {
-    server.send(200, "application/json", "{\"success\":false,\"error\":\"Chua cau hinh duong dan GitHub version.json!\"}");
+    server.send(200, "application/json", "{\"success\":false,\"error\":\"Chua cau hinh duong dan version.json!\"}");
     return;
   }
   if (ota_check_state == OTA_CHECK_RUNNING || ota_check_state == OTA_CHECK_REQUESTED) {
@@ -2344,19 +2469,11 @@ void handleApiCheckOta() {
   }
   ota_check_state = OTA_CHECK_REQUESTED;
   server.send(200, "application/json", "{\"success\":true,\"state\":\"checking\"}");
-
-  // Khởi tạo FreeRTOS Task bất đồng bộ trên Core 0 để check OTA độc lập, không block loop() và không nghẽn WebServer
-  xTaskCreatePinnedToCore([](void *param) {
-    ota_check_state = OTA_CHECK_RUNNING;
-    vTaskDelay(pdMS_TO_TICKS(150)); // Chờ WebServer socket gửi nốt HTTP 200
-    bool ok = checkGithubOta(ota_new_ver, ota_bin_url, ota_changelog, ota_err_msg);
-    ota_check_state = ok ? OTA_CHECK_SUCCESS : OTA_CHECK_FAILED;
-    vTaskDelete(NULL);
-  }, "otaCheckTask", 16384, NULL, 1, NULL, 0);
 }
 
 // API: Thăm dò kết quả kiểm tra OTA từ background task
 void handleApiCheckOtaStatus() {
+  server.sendHeader("Connection", "close");
   String json = "{";
   if (ota_check_state == OTA_CHECK_SUCCESS) {
     bool hasUpdate = (ota_new_ver != FIRMWARE_VERSION);
@@ -2376,6 +2493,7 @@ void handleApiCheckOtaStatus() {
     json += "\"success\":true";
   }
   json += "}";
+  server.sendHeader("Connection", "close");
   server.send(200, "application/json", json);
 }
 
@@ -2417,7 +2535,8 @@ void handleApiSaveOtaUrl() {
       logPrintf("[OTA] Da luu GitHub Version URL: %s", ota_version_url.c_str());
 
       String json = "{\"success\":true,\"ota_url\":\"" + ota_version_url + "\"}";
-      server.send(200, "application/json", json);
+      server.sendHeader("Connection", "close");
+  server.send(200, "application/json", json);
       return;
     }
   }
@@ -2450,7 +2569,8 @@ void handleApiSaveProfile() {
 
     if (addOrUpdateProfile(p)) {
       String json = "{\"success\":true,\"id\":\"" + escapeJson(p.id) + "\",\"msg\":\"Da luu mau cau hinh thanh cong!\"}";
-      server.send(200, "application/json", json);
+      server.sendHeader("Connection", "close");
+  server.send(200, "application/json", json);
       logPrintf("[PROFILE] Da luu/cap nhat Preset: '%s' (ID: %s)", p.name.c_str(), p.id.c_str());
     } else {
       server.send(400, "application/json", "{\"error\":\"Danh sach toi da 10 mau cau hinh!\"}");
@@ -2502,6 +2622,7 @@ void handleApiAutoChannel() {
   json += "\"channel\":" + String(bestCh) + ",";
   json += "\"msg\":\"Da chon Kenh " + String(bestCh) + " toi uu nhat!\"";
   json += "}";
+  server.sendHeader("Connection", "close");
   server.send(200, "application/json", json);
 }
 
@@ -2561,7 +2682,8 @@ void handleApiCloneStaToProfile() {
     json += "\"subnet\":\"" + p.subnet + "\",";
     json += "\"dhcp_start\":\"" + p.dhcp_start + "\",";
     json += "\"dhcp_end\":\"" + p.dhcp_end + "\"}";
-    server.send(200, "application/json", json);
+    server.sendHeader("Connection", "close");
+  server.send(200, "application/json", json);
     logMessage(String("[PRESET] Da sao chep Wi-Fi nguon '") + s_ssid + "' thanh Preset AP.");
   } else {
     server.send(500, "application/json", "{\"success\":false,\"error\":\"Danh sach Preset da day (toi da 10 mau)!\"}");
@@ -2580,6 +2702,7 @@ void setup() {
 
   // Vo hieu hoa tinh nang tiet kiem dien Modem Sleep tren Wi-Fi de dam bao SoftAP phat song lien tuc,
   // khong bi giat lag, rot goi tin hoac vang ket noi thiet bi.
+  WiFi.enableIPv6(false); // Tat IPv6 de tranh tra ve ban ghi AAAA gay loi connect khong co route
   WiFi.setSleep(false);
   esp_wifi_set_ps(WIFI_PS_NONE);
 
@@ -2622,7 +2745,11 @@ void setup() {
     ble_pin = 123456;
     prefs.putUInt("ble_pin", 123456);
   }
-  ota_version_url = prefs.getString("ota_url", "https://cdn.jsdelivr.net/gh/silversymphony/esp32-firmware@main/version.json");
+  ota_version_url = prefs.getString("ota_url", "https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/version.json");
+  if (ota_version_url.indexOf("cdn.jsdelivr.net") >= 0) {
+    ota_version_url = "https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/version.json";
+    prefs.putString("ota_url", ota_version_url);
+  }
 
   // Tu dong dong bo Subnet Mask /22 (255.255.252.0) va dai IP 10.51.28.x neu NVS luu cu
   if (ap_subnet_str == "255.255.255.0" || dhcp_start_str.startsWith("10.51.31.")) {
@@ -2673,7 +2800,7 @@ void setup() {
     esp_netif_ip_info_t ip_info;
     ip_info.ip.addr = (uint32_t)ap_ip;
     ip_info.netmask.addr = (uint32_t)subnet;
-    ip_info.gw.addr = 0; // Luôn đặt gw = 0 cho SoftAP interface
+    ip_info.gw.addr = (sta_enabled && WiFi.status() == WL_CONNECTED) ? (uint32_t)ap_ip : 0; // Khi có Wi-Fi nguồn: gán gw để DHCPS cấp Option 3; Khi tắt STA: gw=0 để điện thoại dùng 5G
     esp_netif_dhcps_stop(ap_netif);
     esp_netif_set_ip_info(ap_netif, &ip_info);
   }
@@ -2865,6 +2992,14 @@ void loop() {
       configureSoftApDhcp(false);
       logMessage("[MODE] Da BAT Wi-Fi nguon -> Dang ket noi Internet...");
     }
+  }
+
+  // 6c. Xử lý kiểm tra OTA bất đồng bộ trong loopTask (tái sử dụng stack, không tốn thêm 8KB heap)
+  if (ota_check_state == OTA_CHECK_REQUESTED) {
+    ota_check_state = OTA_CHECK_RUNNING;
+    delay(100); // Chờ WebServer socket gửi nốt HTTP 200
+    bool ok = checkGithubOta(ota_new_ver, ota_bin_url, ota_changelog, ota_err_msg);
+    ota_check_state = ok ? OTA_CHECK_SUCCESS : OTA_CHECK_FAILED;
   }
 
   // 7. Thực hiện OTA Firmware nếu có lệnh từ Web hoặc BLE

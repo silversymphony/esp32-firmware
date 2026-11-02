@@ -4,16 +4,16 @@ Dự án firmware quản trị mạng trung gian và chuyển tiếp Wi-Fi cho E
 
 ---
 
-## 🚀 Phiên Bản Mới Nhất: `v1.3.7` (Khuyến Nghị)
+## 🚀 Phiên Bản Mới Nhất: `v1.3.8` (Khuyến Nghị)
 
-- **Firmware Binary**: [`esp32_v1.3.7/esp32_v1.3.7.ino.bin`](esp32_v1.3.7/esp32_v1.3.7.ino.bin)
-- **Mã nguồn**: [`esp32_v1.3.7/esp32_v1.3.7.ino`](esp32_v1.3.7/esp32_v1.3.7.ino)
-- **Điểm nổi bật v1.3.7**:
-  - ✅ **Hiển thị đầy đủ tên Bluetooth LE (`ESP32-Gateway-BLE`)**: Đóng gói tên trực tiếp vào gói tin quảng bá chính (Primary Advertisement Data) cùng cờ `0x06` giúp mọi điện thoại (Android, Vivo, iPhone) nhận diện và hiển thị rõ tên mạch ngay khi quét.
-  - ✅ **Đèn LED xanh chỉ báo Wi-Fi nguồn (GPIO 2)**: Tắt hẳn khi Wi-Fi nguồn TẮT (`sta:off`); Sáng liên tục khi ĐÃ KẾT NỐI; Nhấp nháy 1 giây/lần khi ĐANG BẬT nhưng chưa có kết nối (đang dò tìm hoặc mất sóng).
-  - ✅ **Mặc định khởi động lần đầu TẮT Wi-Fi nguồn**: Tối ưu cho chế độ Mạng nội bộ Offline dùng 5G; người dùng chỉ bật khi cần kết nối Wi-Fi ngoài.
-  - ✅ **Chống spam log mất kết nối**: Chốt cờ trạng thái kết nối; chỉ báo `[WIFI-STA] Mat ket noi` 1 lần duy nhất khi thực sự bị rớt mạng, không spam lặp lại trong chu kỳ quét/thử lại thất bại.
-  - ✅ **Khắc phục triệt để lỗi kiểm tra OTA (`connection refused -1`)**: Bảo toàn 100% DNS nhận từ DHCP của router làm DNS chính (`slot 0`), bổ sung Cloudflare `1.1.1.1` làm dự phòng (`slot 1`); kiểm tra xác thực phân giải DNS domain GitHub trước khi kết nối; mở rộng stack task FreeRTOS lên 16 KB.
+- **Firmware Binary**: [`esp32_v1.3.8/esp32_v1.3.8.ino.bin`](esp32_v1.3.8/esp32_v1.3.8.ino.bin)
+- **Mã nguồn**: [`esp32_v1.3.8/esp32_v1.3.8.ino`](esp32_v1.3.8/esp32_v1.3.8.ino)
+- **Điểm nổi bật v1.3.8**:
+  - ✅ **Sửa dứt điểm lỗi kiểm tra OTA (`connection refused -1`)**: Cố định gateway SoftAP `gw = 0.0.0.0` để LwIP không gửi quẩn gói tin TCP ra chính ESP32; bảo toàn DNS router nhận từ DHCP trong `enableNapt()`; gán `sta_netif` làm default netif khi mở socket HTTPS.
+  - ✅ **Tích hợp Cloudflare CDN Mirror (`cdn.jsdelivr.net`)**: Kết nối tải siêu tốc qua Cloudflare CDN Edge, không bị chặn SNI tại Việt Nam, cơ chế tự động chuyển đổi qua lại giữa GitHub raw và CDN mirror.
+  - ✅ **Đổi mã PIN Bluetooth LE mặc định thành `123456`**: Dễ nhớ, bảo mật theo chuẩn ghép đôi phần cứng 6 số.
+  - ✅ **Mặc định khởi động lần đầu**: TẮT Wi-Fi nguồn, không lưu sẵn cấu hình Wi-Fi nguồn (người dùng chủ động cấu hình qua Web Portal hoặc BLE).
+  - ✅ **Bảo toàn 100% cấu hình mạng**: SoftAP SSID `ODE - wireless WiFi`, mật khẩu `Ode6868@`, IP `10.51.31.254`, Subnet `/22`, dải DHCP ngẫu nhiên `10.51.28.10` - `10.51.28.200`.
 
 ---
 
@@ -21,7 +21,8 @@ Dự án firmware quản trị mạng trung gian và chuyển tiếp Wi-Fi cho E
 
 | Thư mục | Phiên bản | Đặc điểm chính |
 | :--- | :---: | :--- |
-| [`esp32_v1.3.7/`](esp32_v1.3.7/) | **v1.3.7** | **Bản mới nhất**: Hiển thị tên BLE, LED xanh GPIO 2 báo STA, mặc định tắt STA, chống spam log, sửa triệt để OTA Check |
+| [`esp32_v1.3.8/`](esp32_v1.3.8/) | **v1.3.8** | **Bản mới nhất**: Sửa dứt điểm OTA connection refused (-1), CDN Mirror Cloudflare, PIN BLE 123456, tắt Wi-Fi nguồn mặc định |
+| [`esp32_v1.3.7/`](esp32_v1.3.7/) | **v1.3.7** | Hiển thị tên BLE, LED xanh GPIO 2 báo STA, mặc định tắt STA, chống spam log |
 | [`esp32_v1.3.6/`](esp32_v1.3.6/) | **v1.3.6** | Chuyển đổi STA an toàn, Terminal Log cuộn thông minh, FreeRTOS OTA background task Core 0 |
 | [`esp32_v1.3.5/`](esp32_v1.3.5/) | **v1.3.5** | Tối ưu 5G fallback, async Wi-Fi scan, 120 dòng log, loại bỏ Web Remote |
 | [`esp32_v1.3.4/`](esp32_v1.3.4/) | **v1.3.4** | Bật NAPT LwIP trực tiếp, Web Remote đồng bộ 19 API endpoints với Cloudflare |
@@ -34,7 +35,7 @@ Dự án firmware quản trị mạng trung gian và chuyển tiếp Wi-Fi cho E
 
 ---
 
-## ⚙️ Thông Số Mặc Định Hệ Thống (v1.3.7)
+## ⚙️ Thông Số Mặc Định Hệ Thống (v1.3.8)
 
 | Thông số | Giá trị mặc định |
 | :--- | :--- |
@@ -43,8 +44,8 @@ Dự án firmware quản trị mạng trung gian và chuyển tiếp Wi-Fi cho E
 | **Kênh phát sóng AP** | Kênh `6` (hoặc tự động theo Wi-Fi nguồn) |
 | **Địa chỉ Gateway Web Portal** | `http://10.51.31.254` |
 | **Dải cấp phát IP (DHCP)** | `10.51.28.10` – `10.51.28.200` (Subnet `255.255.252.0` / `/22`) |
-| **Mã PIN bảo mật BLE Terminal** | `070213` |
-| **Đường dẫn kiểm tra OTA** | `https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/version.json` |
+| **Mã PIN bảo mật BLE Terminal** | `123456` |
+| **Đường dẫn kiểm tra OTA** | `https://cdn.jsdelivr.net/gh/silversymphony/esp32-firmware@main/version.json` |
 
 ---
 

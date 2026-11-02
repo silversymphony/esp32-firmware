@@ -205,7 +205,7 @@ String pending_ble_cmd = "";
 // =========================================================================
 //              HỆ THỐNG GHI NHẬT KÝ KHÔNG DÂY (LOG BUFFER)
 // =========================================================================
-#define LOG_BUFFER_SIZE 120
+#define LOG_BUFFER_SIZE 30
 String logBuffer[LOG_BUFFER_SIZE];
 int logHead = 0;
 int logCount = 0;
@@ -1418,9 +1418,13 @@ bool resolveHostIPv4(const char *hostname, IPAddress &result) {
   return false;
 }
 
+// Đối tượng WiFiClientSecure dùng chung cho OTA (tránh tạo/hủy liên tục gây phân mảnh RAM heap)
+static WiFiClientSecure otaClient;
+
 // Helper thực hiện tải JSON qua HTTPS
 bool fetchOtaJson(const String &targetUrl, String &payloadOut, String &errOut) {
-  logPrintf("[OTA] Dang kiem tra version tu: %s (Free Heap: %u bytes)", targetUrl.c_str(), ESP.getFreeHeap());
+  logPrintf("[OTA] Dang kiem tra version tu: %s (Free Heap: %u bytes | Max Block: %u bytes)", 
+            targetUrl.c_str(), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
   String host, path;
   uint16_t port = 443;
@@ -1438,26 +1442,26 @@ bool fetchOtaJson(const String &targetUrl, String &payloadOut, String &errOut) {
   }
   logPrintf("[OTA] DNS IPv4 thanh cong: %s -> %s", host.c_str(), hostIp.toString().c_str());
 
-  if (ESP.getFreeHeap() < 20000) {
-    errOut = "Khong du bo nho RAM (con " + String(ESP.getFreeHeap()) + " bytes) de khoi tao SSL!";
+  if (ESP.getMaxAllocHeap() < 20000) {
+    errOut = "Khong du khoi nho RAM lien tuc (Max Block: " + String(ESP.getMaxAllocHeap()) + " bytes, Free: " + String(ESP.getFreeHeap()) + " bytes) de khoi tao SSL!";
     logPrintf("[OTA-LOI] %s", errOut.c_str());
     return false;
   }
 
   try {
-    WiFiClientSecure client;
-    client.setInsecure();
-    client.setTimeout(15000);
-    client.setHandshakeTimeout(15000);
+    otaClient.stop();
+    otaClient.setInsecure();
+    otaClient.setTimeout(15000);
+    otaClient.setHandshakeTimeout(15000);
 
     // 2. Kết nối trực tiếp socket tới IPv4 với SNI hostname để bảo đảm định tuyến đúng qua STA
-    if (!client.connect(hostIp, port, host.c_str(), NULL, NULL, NULL)) {
+    if (!otaClient.connect(hostIp, port, host.c_str(), NULL, NULL, NULL)) {
       char sslErr[100] = {0};
-      client.lastError(sslErr, sizeof(sslErr));
+      otaClient.lastError(sslErr, sizeof(sslErr));
       String detail = (sslErr[0] != 0) ? String(" | SSL: ") + sslErr : "";
       errOut = "Loi ket noi TLS toi " + hostIp.toString() + detail;
       logPrintf("[OTA-LOI] %s", errOut.c_str());
-      client.stop();
+      otaClient.stop();
       return false;
     }
 
@@ -1469,8 +1473,8 @@ bool fetchOtaJson(const String &targetUrl, String &payloadOut, String &errOut) {
     http.setReuse(true);
 
     // 3. Khởi tạo HTTPClient với client đã kết nối sẵn qua IPv4
-    if (!http.begin(client, host, port, path, true)) {
-      client.stop();
+    if (!http.begin(otaClient, host, port, path, true)) {
+      otaClient.stop();
       errOut = "Khong the khoi tao HTTPClient voi " + targetUrl;
       return false;
     }
@@ -1479,23 +1483,25 @@ bool fetchOtaJson(const String &targetUrl, String &payloadOut, String &errOut) {
     if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY || httpCode == HTTP_CODE_FOUND) {
       payloadOut = http.getString();
       http.end();
-      client.stop();
+      otaClient.stop();
       return true;
     } else {
       char sslErr[100] = {0};
-      client.lastError(sslErr, sizeof(sslErr));
+      otaClient.lastError(sslErr, sizeof(sslErr));
       String detail = (sslErr[0] != 0) ? String(" | SSL: ") + sslErr : "";
       errOut = "Loi ket noi: " + http.errorToString(httpCode) + " (" + String(httpCode) + ")" + detail;
       logPrintf("[OTA-LOI] Ket noi %s that bai: %s", targetUrl.c_str(), errOut.c_str());
       http.end();
-      client.stop();
+      otaClient.stop();
       return false;
     }
   } catch (const std::exception &e) {
+    otaClient.stop();
     errOut = "Loi bo nho (std::exception): " + String(e.what());
     logPrintf("[OTA-LOI] %s", errOut.c_str());
     return false;
   } catch (...) {
+    otaClient.stop();
     errOut = "Loi thieu bo nho RAM cap phat SSL (Out of Memory)!";
     logPrintf("[OTA-LOI] %s", errOut.c_str());
     return false;
@@ -1512,6 +1518,9 @@ bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &e
     errMsg = "Chua cau hinh duong dan version.json!";
     return false;
   }
+
+  // Thu hoi bo nho scan Wi-Fi truoc khi khoi tao SSL TLS
+  cached_scan_json = "[]";
 
   // Đảm bảo default netif là sta_netif trước khi kết nối HTTPS ra ngoài
   esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
@@ -1585,17 +1594,17 @@ bool executeOtaDownload(const String &dlUrl) {
   logPrintf("[OTA] DNS IPv4 thanh cong: %s -> %s", host.c_str(), hostIp.toString().c_str());
 
   try {
-    WiFiClientSecure client;
-    client.setInsecure();
-    client.setTimeout(30000);
-    client.setHandshakeTimeout(30000);
+    otaClient.stop();
+    otaClient.setInsecure();
+    otaClient.setTimeout(30000);
+    otaClient.setHandshakeTimeout(30000);
 
-    if (!client.connect(hostIp, port, host.c_str(), NULL, NULL, NULL)) {
+    if (!otaClient.connect(hostIp, port, host.c_str(), NULL, NULL, NULL)) {
       char sslErr[100] = {0};
-      client.lastError(sslErr, sizeof(sslErr));
+      otaClient.lastError(sslErr, sizeof(sslErr));
       String detail = (sslErr[0] != 0) ? String(" | SSL: ") + sslErr : "";
       logPrintf("[OTA-LOI] Ket noi TLS toi %s that bai%s", hostIp.toString().c_str(), detail.c_str());
-      client.stop();
+      otaClient.stop();
       return false;
     }
 
@@ -1606,8 +1615,8 @@ bool executeOtaDownload(const String &dlUrl) {
     http.setTimeout(30000);
     http.setReuse(true);
 
-    if (!http.begin(client, host, port, path, true)) {
-      client.stop();
+    if (!http.begin(otaClient, host, port, path, true)) {
+      otaClient.stop();
       logPrintf("[OTA-LOI] Khong the khoi tao HTTPClient den %s", dlUrl.c_str());
       return false;
     }
@@ -1617,11 +1626,11 @@ bool executeOtaDownload(const String &dlUrl) {
 
     if (httpCode != HTTP_CODE_OK && httpCode != HTTP_CODE_MOVED_PERMANENTLY && httpCode != HTTP_CODE_FOUND) {
       char sslErr[100] = {0};
-      client.lastError(sslErr, sizeof(sslErr));
+      otaClient.lastError(sslErr, sizeof(sslErr));
       String detail = (sslErr[0] != 0) ? String(" | SSL: ") + sslErr : "";
       logPrintf("[OTA-LOI] May chu tra ve ma loi: %d (%s)%s", httpCode, http.errorToString(httpCode).c_str(), detail.c_str());
       http.end();
-      client.stop();
+      otaClient.stop();
       return false;
     }
 
@@ -1631,14 +1640,14 @@ bool executeOtaDownload(const String &dlUrl) {
     if (contentLength <= 0) {
       logMessage("[OTA-LOI] Khong xac dinh duoc kich thuoc file (Content-Length <= 0)!");
       http.end();
-      client.stop();
+      otaClient.stop();
       return false;
     }
 
     if (!Update.begin(contentLength)) {
       logPrintf("[OTA-LOI] Khong the khoi dong Update Flash (Ma loi: %d)", Update.getError());
       http.end();
-      client.stop();
+      otaClient.stop();
       return false;
     }
 
@@ -1658,7 +1667,7 @@ bool executeOtaDownload(const String &dlUrl) {
       if (Update.isFinished()) {
         logMessage("[OTA] 🎉 Nap Flash thanh cong 100%! Dang khoi dong lai vao Firmware moi...");
         http.end();
-        client.stop();
+        otaClient.stop();
         delay(1000);
         ESP.restart();
         return true;
@@ -1670,12 +1679,14 @@ bool executeOtaDownload(const String &dlUrl) {
     }
 
     http.end();
-    client.stop();
+    otaClient.stop();
     return false;
   } catch (const std::exception &e) {
+    otaClient.stop();
     logPrintf("[OTA-LOI] Ngoai le: %s", e.what());
     return false;
   } catch (...) {
+    otaClient.stop();
     logMessage("[OTA-LOI] Loi bo nho RAM khi tai firmware!");
     return false;
   }
@@ -2177,6 +2188,7 @@ void handleApiStatus() {
   json += "\"fw_ver\":\"" + FIRMWARE_VERSION + "\",";
   json += "\"ota_url\":\"" + ota_version_url + "\",";
   json += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
+  json += "\"max_alloc_heap\":" + String(ESP.getMaxAllocHeap()) + ",";
   json += "\"uptime\":" + String(millis() / 1000);
   json += "}";
 

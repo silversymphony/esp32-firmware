@@ -64,6 +64,8 @@ extern "C" {
 #include <esp_http_client.h>
 #include <esp_crt_bundle.h>
 #include <esp_https_ota.h>
+#include <time.h>
+#include <sys/time.h>
 
 // =========================================================================
 //                  QUẢN LÝ THÔNG SỐ CẤU HÌNH (PREFERENCES NVS)
@@ -177,8 +179,6 @@ const byte DNS_PORT = 53;
 // Trạng thái vận hành
 bool napt_enabled = false;
 bool dns_captive_running = false;
-WiFiUDP dnsProxyUdp;
-bool dnsProxyActive = false;
 void startDnsProxy();
 void stopDnsProxy();
 void handleDnsProxy();
@@ -1409,6 +1409,8 @@ bool fetchOtaJson(const String &targetUrl, String &payloadOut, String &errOut) {
   config.buffer_size_tx = 1024;
   config.timeout_ms = 15000;
   config.skip_cert_common_name_check = true;
+  config.addr_type = HTTP_ADDR_TYPE_INET;
+  config.max_redirection_count = 5;
 
   esp_http_client_handle_t client = esp_http_client_init(&config);
   if (!client) {
@@ -1448,6 +1450,13 @@ bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &e
     errMsg = "Chua cau hinh duong dan version.json!";
     return false;
   }
+
+  // Khởi tạo mốc thời gian tối thiểu hợp lệ để mbedTLS không từ chối chứng chỉ SSL
+  if (time(nullptr) < 1704067200) {
+    struct timeval tv = { .tv_sec = 1767225600, .tv_usec = 0 }; // 2026-01-01
+    settimeofday(&tv, NULL);
+  }
+  configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
 
   // Thu hoi bo nho scan Wi-Fi truoc khi khoi tao SSL TLS
   cached_scan_json = "[]";
@@ -1517,6 +1526,9 @@ bool executeOtaDownload(const String &dlUrl) {
   http_config.buffer_size_tx = 1024;
   http_config.timeout_ms = 30000;
   http_config.skip_cert_common_name_check = true;
+  http_config.addr_type = HTTP_ADDR_TYPE_INET;
+  http_config.max_redirection_count = 5;
+  http_config.keep_alive_enable = true;
 
   esp_https_ota_config_t ota_config = {};
   ota_config.http_config = &http_config;
@@ -1570,6 +1582,11 @@ void performGithubOta(const String &binUrl) {
   if (WiFi.status() != WL_CONNECTED) {
     logMessage("[OTA-LOI] ESP32 chua ket noi Wi-Fi nguon (Internet)!");
     return;
+  }
+
+  if (time(nullptr) < 1704067200) {
+    struct timeval tv = { .tv_sec = 1767225600, .tv_usec = 0 };
+    settimeofday(&tv, NULL);
   }
 
   esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
@@ -1628,57 +1645,10 @@ bool parse_mac(const String &macStr, uint8_t *macArr) {
   return false;
 }
 
-// Quản lý DNS Relay trên cổng 53: chuyển tiếp mọi truy vấn DNS từ điện thoại ra 8.8.8.8
-void startDnsProxy() {
-  if (!dnsProxyActive && sta_enabled && WiFi.status() == WL_CONNECTED) {
-    if (dnsProxyUdp.begin(DNS_PORT)) {
-      dnsProxyActive = true;
-      logMessage("[DNS-RELAY] Da bat DNS Relay tren cong 53 chuyen tiep Internet.");
-    }
-  }
-}
-
-void stopDnsProxy() {
-  if (dnsProxyActive) {
-    dnsProxyUdp.stop();
-    dnsProxyActive = false;
-    logMessage("[DNS-RELAY] Da tat DNS Relay cong 53.");
-  }
-}
-
-void handleDnsProxy() {
-  if (!dnsProxyActive || WiFi.status() != WL_CONNECTED) return;
-  int packetSize = dnsProxyUdp.parsePacket();
-  if (packetSize > 0 && packetSize <= 512) {
-    uint8_t buffer[512];
-    IPAddress clientIp = dnsProxyUdp.remoteIP();
-    uint16_t clientPort = dnsProxyUdp.remotePort();
-    int len = dnsProxyUdp.read(buffer, packetSize);
-
-    IPAddress upstreamDns = IPAddress(8, 8, 8, 8);
-    WiFiUDP forwardUdp;
-    if (forwardUdp.begin(0)) {
-      forwardUdp.beginPacket(upstreamDns, 53);
-      forwardUdp.write(buffer, len);
-      forwardUdp.endPacket();
-
-      unsigned long t0 = millis();
-      while (millis() - t0 < 350) {
-        int rSize = forwardUdp.parsePacket();
-        if (rSize > 0) {
-          uint8_t resp[512];
-          int rLen = forwardUdp.read(resp, sizeof(resp));
-          dnsProxyUdp.beginPacket(clientIp, clientPort);
-          dnsProxyUdp.write(resp, rLen);
-          dnsProxyUdp.endPacket();
-          break;
-        }
-        delay(1);
-      }
-      forwardUdp.stop();
-    }
-  }
-}
+// Quản lý DNS Relay: NAPT tự động dịch gói tin DNS (UDP 53) trực tiếp ra mạng ngoài không cần proxy
+void startDnsProxy() {}
+void stopDnsProxy() {}
+void handleDnsProxy() {}
 
 // Bật NAPT và chuyển tiếp DNS an toàn với chuẩn ESP-IDF
 void enableNapt() {
@@ -1710,7 +1680,6 @@ void enableNapt() {
       }
     }
     napt_enabled = true;
-    startDnsProxy();
     logMessage("[NAT] Da kich hoat NAPT dinh tuyen Internet!");
   }
 }
@@ -1729,7 +1698,6 @@ void disableNapt() {
       }
     }
     napt_enabled = false;
-    stopDnsProxy();
     logMessage("[NAT] Da tam dung NAPT do mat ket noi nguon.");
   }
 }
@@ -1737,14 +1705,12 @@ void disableNapt() {
 // Bật Captive Portal (chặn DNS để điện thoại tự nhảy popup)
 void startCaptiveDns() {
   if (!sta_enabled) {
-    stopDnsProxy();
     if (dns_captive_running) {
       dnsServer.stop();
       dns_captive_running = false;
     }
     return;
   }
-  stopDnsProxy();
   if (!dns_captive_running) {
     IPAddress ap_ip;
     ap_ip.fromString(ap_ip_str);
@@ -1762,7 +1728,6 @@ void stopCaptiveDns() {
     dns_captive_running = false;
     logMessage("[CAPTIVE] Da tat Captive DNS Server (Cho phep luu thong DNS binh thuong).");
   }
-  startDnsProxy();
 }
 
 // =========================================================================
@@ -1894,14 +1859,34 @@ void configureSoftApDhcp(bool randomizePool) {
     );
 
     if (dhcps_dns_value == OFFER_DNS) {
-      esp_netif_dns_info_t dns_main;
-      dns_main.ip.type = IPADDR_TYPE_V4;
-      dns_main.ip.u_addr.ip4.addr = (uint32_t)IPAddress(8, 8, 8, 8); // Cap DNS 8.8.8.8 de dien thoai luon vao mang on dinh
+      esp_netif_dns_info_t dns_main, dns_backup;
+      dns_main.ip.type = ESP_IPADDR_TYPE_V4;
+      dns_backup.ip.type = ESP_IPADDR_TYPE_V4;
+
+      IPAddress upstreamDns = WiFi.dnsIP(0);
+      if (upstreamDns == IPAddress(0, 0, 0, 0)) {
+        upstreamDns = IPAddress(8, 8, 8, 8); // Google Public DNS
+      }
+      dns_main.ip.u_addr.ip4.addr = (uint32_t)upstreamDns;
+
+      IPAddress backupDns = WiFi.dnsIP(1);
+      if (backupDns == IPAddress(0, 0, 0, 0) || backupDns == upstreamDns) {
+        backupDns = IPAddress(1, 1, 1, 1); // Cloudflare Public DNS
+      }
+      dns_backup.ip.u_addr.ip4.addr = (uint32_t)backupDns;
+
       esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_MAIN, &dns_main);
+      esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_BACKUP, &dns_backup);
     }
 
     esp_err_t start_err = esp_netif_dhcps_start(ap_netif);
     logPrintf("[DHCP] Khoi chay Native ESP-IDF DHCP Server! (Ket qua: %d)", start_err);
+
+    // Luon dam bao Default Netif la STA khi da ket noi Wi-Fi nguon
+    esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (sta_netif != NULL && has_uplink) {
+      esp_netif_set_default_netif(sta_netif);
+    }
   } else {
     logMessage("[DHCP-LOI] Khong tim thay netif WIFI_AP_DEF!");
   }
@@ -1938,13 +1923,17 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
 
     sta_connected_state = true; // Chốt trạng thái đã kết nối thành công
 
+    // Đồng bộ thời gian hệ thống SNTP ngay khi có mạng để mbedTLS xác thực chứng chỉ TLS/SSL
+    configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
+
     // Bổ sung DNS Cloudflare (1.1.1.1) làm dự phòng, TUYỆT ĐỐI KHÔNG ghi đè DNS chính của router
     esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (sta_netif != NULL) {
       esp_netif_dns_info_t dns_cf;
-      dns_cf.ip.type = IPADDR_TYPE_V4;
+      dns_cf.ip.type = ESP_IPADDR_TYPE_V4;
       dns_cf.ip.u_addr.ip4.addr = (uint32_t)IPAddress(1, 1, 1, 1);
       esp_netif_set_dns_info(sta_netif, ESP_NETIF_DNS_BACKUP, &dns_cf);
+      esp_netif_set_default_netif(sta_netif);
     }
 
     enableNapt();
@@ -2006,7 +1995,7 @@ void handleCaptiveRedirect() {
       return;
     }
     if (host.length() > 0 && host != ap_ip_str && host != WiFi.localIP().toString() && host.indexOf("esp32.local") == -1) {
-      server.send(204, "text/plain", "");
+      server.send(404, "text/plain", "Not Found");
       return;
     }
     handleRoot();
@@ -2775,6 +2764,7 @@ void setup() {
     // Bước 10: Kiểm tra trạng thái Internet và thiết lập NAT hoặc Captive Portal
     if (WiFi.status() == WL_CONNECTED) {
       logPrintf("[STA] Da ket noi Internet thanh cong! IP nhan: %s", WiFi.localIP().toString().c_str());
+      configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
       enableNapt();
       stopCaptiveDns();
       configureSoftApDhcp(false);
@@ -2809,11 +2799,9 @@ void loop() {
     }
   }
 
-  // 3. Phục vụ Captive DNS Server nếu chưa có Internet, hoặc DNS Relay khi đã có Internet
+  // 3. Phục vụ Captive DNS Server nếu chưa có Internet
   if (dns_captive_running) {
     dnsServer.processNextRequest();
-  } else if (dnsProxyActive) {
-    handleDnsProxy();
   }
 
   // 4. Xử lý lệnh nhận được từ Bluetooth LE trong Task chính (tránh nghẽn NimBLE Host Task)
@@ -2841,6 +2829,7 @@ void loop() {
       if (WiFi.status() == WL_CONNECTED) {
         if (!napt_enabled) {
           logMessage("[LOOP] STA da ket noi lai! Bat NAPT va tat Captive Portal.");
+          configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
           enableNapt();
           stopCaptiveDns();
           configureSoftApDhcp(false);
@@ -2871,7 +2860,6 @@ void loop() {
       WiFi.mode(WIFI_AP);
       disableNapt();
       stopCaptiveDns();
-      stopDnsProxy();
       configureSoftApDhcp(false);
       delay(100);
       esp_wifi_deauth_sta(0);

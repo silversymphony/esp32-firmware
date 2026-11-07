@@ -101,6 +101,8 @@ bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &e
 void performGithubOta(const String &binUrl);
 bool parse_mac(const String &macStr, uint8_t *macArr);
 void configureSoftApDhcp(bool randomizePool = false);
+void triggerStaConnect();
+void stopStaConnecting();
 String serializeLogsJson();
 String performWifiScanJson();
 
@@ -139,6 +141,17 @@ String sta_ssid;
 String sta_password;
 String cached_scan_json = "[]";
 unsigned long last_scan_time = 0;
+
+// Bộ máy trạng thái kết nối Wi-Fi nguồn (Non-blocking STA Reconnect State Machine)
+enum StaConnState {
+  STA_STATE_IDLE,       // Nghỉ ngơi, không quét kênh ngầm, radio 100% dành trọn cho SoftAP
+  STA_STATE_CONNECTING, // Đang trong cửa sổ kết nối thử nghiệm ngắn (tối đa 4 giây)
+  STA_STATE_CONNECTED   // Đã kết nối thành công vào Wi-Fi nguồn
+};
+StaConnState sta_conn_state = STA_STATE_IDLE;
+unsigned long sta_connect_start_time = 0;
+unsigned long sta_next_retry_time = 0;
+unsigned long last_ap_client_connected_time = 0;
 
 // Hàm cập nhật trạng thái đèn LED chỉ báo Wi-Fi nguồn (GPIO 2)
 void updateWifiLed() {
@@ -248,6 +261,31 @@ void logPrintf(const char *format, ...) {
     s.remove(s.length() - 1);
   }
   logMessage(s);
+}
+
+// Tạm dừng kết nối STA để giải phóng radio 100% cho SoftAP
+void stopStaConnecting() {
+  WiFi.disconnect(false);
+  esp_wifi_disconnect();
+  esp_wifi_set_channel(current_effective_channel, WIFI_SECOND_CHAN_NONE);
+  sta_conn_state = STA_STATE_IDLE;
+  sta_next_retry_time = millis() + 30000; // Nghỉ 30s trước khi thử lại
+  logPrintf("[STA] Tam dung quet Wi-Fi nguon. Khoa kenh SoftAP: %d. Thu lai sau 30s.", current_effective_channel);
+}
+
+// Bắt đầu cửa sổ kết nối thử nghiệm vào Wi-Fi nguồn (tối đa 4s)
+void triggerStaConnect() {
+  if (!sta_enabled || sta_ssid.length() == 0) return;
+  if (WiFi.status() == WL_CONNECTED) {
+    sta_conn_state = STA_STATE_CONNECTED;
+    return;
+  }
+  logPrintf("[STA] Thu ket noi vao Wi-Fi nguon: '%s' (Cua so toi da 4s)...", sta_ssid.c_str());
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.setAutoReconnect(false);
+  WiFi.begin(sta_ssid.c_str(), (sta_password.length() > 0 ? sta_password.c_str() : NULL));
+  sta_conn_state = STA_STATE_CONNECTING;
+  sta_connect_start_time = millis();
 }
 
 // Kiểm tra chuỗi có đúng 6 chữ số hợp lệ hay không
@@ -476,13 +514,10 @@ void handleBleCommand(String cmd) {
       prefs.putBool("sta_en", true);
       prefs.end();
 
-      logPrintf("[STA] Da cap nhat Wi-Fi nguon: '%s'. Dang ket noi lai...", sta_ssid.c_str());
+      logPrintf("[STA] Da cap nhat Wi-Fi nguon: '%s'. Dang ket noi...", sta_ssid.c_str());
       sendResponse("[OK] Da luu Wi-Fi! ESP32 dang ket noi vao: " + sta_ssid);
 
-      WiFi.disconnect();
-      delay(100);
-      WiFi.mode(WIFI_AP_STA);
-      WiFi.begin(sta_ssid.c_str(), (sta_password.length() > 0 ? sta_password.c_str() : NULL));
+      triggerStaConnect();
     } else {
       sendResponse("[ERROR] Cu phap sai! Hay gui: WIFI:TenWifi,MatKhau");
     }
@@ -495,11 +530,11 @@ void handleBleCommand(String cmd) {
     prefs.begin("gateway", false);
     prefs.putBool("sta_en", true);
     prefs.end();
-    WiFi.mode(WIFI_AP_STA);
     if (sta_ssid.length() > 0) {
-      WiFi.begin(sta_ssid.c_str(), (sta_password.length() > 0 ? sta_password.c_str() : NULL));
+      triggerStaConnect();
       sendResponse("[OK] Da BAT Wi-Fi nguon (Internet Repeater). ESP32 dang ket noi vao: " + sta_ssid);
     } else {
+      sta_conn_state = STA_STATE_IDLE;
       sendResponse("[OK] Da BAT Wi-Fi nguon. Chua co SSID duoc luu, hay dung lenh: WIFI:ssid,pass");
     }
     return;
@@ -511,10 +546,13 @@ void handleBleCommand(String cmd) {
     prefs.putBool("sta_en", false);
     prefs.end();
     WiFi.disconnect(true);
+    esp_wifi_disconnect();
     WiFi.mode(WIFI_AP);
+    esp_wifi_set_channel(current_effective_channel, WIFI_SECOND_CHAN_NONE);
+    sta_conn_state = STA_STATE_IDLE;
     disableNapt();
     stopCaptiveDns();
-    configureSoftApDhcp();
+    configureSoftApDhcp(false);
     delay(50);
     esp_wifi_deauth_sta(0);
     sendResponse("[OK] Da TAT Wi-Fi nguon! ESP32 chuyen sang che do MANG NOI BO OFFLINE. Dien thoai ket noi vao se giu nguyen 5G de truy cap Internet.");
@@ -1927,6 +1965,8 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
               mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     Serial.println(buf);
     addLogToBuffer(String(buf));
+
+    last_ap_client_connected_time = millis(); // Ghi nhan thoi diem de hoan STA reconnect
   } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
     char buf[120];
     snprintf(buf, sizeof(buf), "[WIFI-STA] Da nhan IP: %s | Gateway: %s",
@@ -1935,6 +1975,7 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
     addLogToBuffer(String(buf));
 
     sta_connected_state = true; // Chốt trạng thái đã kết nối thành công
+    sta_conn_state = STA_STATE_CONNECTED;
 
     // Đồng bộ thời gian hệ thống SNTP ngay khi có mạng để mbedTLS xác thực chứng chỉ TLS/SSL
     configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
@@ -1964,7 +2005,8 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
     } else {
       stopCaptiveDns();
     }
-    // Khong goi configureSoftApDhcp() o day de tranh restart DHCP lam rot ket noi cac thiet bi dang vao Wi-Fi AP
+    // Khoa lai kenh SoftAP de bao ve song Wi-Fi AP khong bi loan kenh
+    esp_wifi_set_channel(current_effective_channel, WIFI_SECOND_CHAN_NONE);
   }
 }
 
@@ -2044,6 +2086,7 @@ void handleApiStatus() {
 
   String json = "{";
   json += "\"sta_enabled\":" + String(sta_enabled ? "true" : "false") + ",";
+  json += "\"sta_connecting\":" + String((sta_enabled && sta_conn_state == STA_STATE_CONNECTING) ? "true" : "false") + ",";
   json += "\"connected\":" + String(connected ? "true" : "false") + ",";
   json += "\"sta_ssid\":\"" + (sta_enabled ? sta_ssid : "") + "\",";
   json += "\"sta_pass\":\"" + (sta_enabled ? safe_sta_pass : "") + "\",";
@@ -2264,12 +2307,9 @@ void handleApiSaveSta() {
     prefs.putBool("sta_en", true);
     prefs.end();
 
-    logPrintf("[STA] Da luu Wi-Fi nguon moi: %s. Dang ket noi lai...", sta_ssid.c_str());
+    logPrintf("[STA] Da luu Wi-Fi nguon moi: %s. Dang ket noi...", sta_ssid.c_str());
 
-    WiFi.disconnect();
-    delay(100);
-    WiFi.mode(WIFI_AP_STA);
-    WiFi.begin(sta_ssid.c_str(), (sta_password.length() > 0 ? sta_password.c_str() : NULL));
+    triggerStaConnect();
 
     server.send(200, "application/json", "{\"success\":true,\"msg\":\"Da luu Wi-Fi nguon! ESP32 dang ket noi lai...\"}");
   } else {
@@ -2680,6 +2720,7 @@ void setup() {
     WiFi.mode(WIFI_AP);
     logMessage("[MODE] Khoi dong o che do MANG NOI BO (Offline Local LAN - Dien thoai dung 5G).");
   }
+  WiFi.setAutoReconnect(false);
 
   // Bước 4: Nạp địa chỉ MAC (BSSID) phần cứng cho cổng phát AP
   uint8_t custom_bssid[6];
@@ -2766,37 +2807,44 @@ void setup() {
   }
 
   // Bước 9: Kết nối vào Wi-Fi nguồn (STA) nếu được bật
-  if (sta_enabled) {
-    if (sta_ssid.length() > 0) {
-      logPrintf("[STA] Dang ket noi vao mang nguon: %s...", sta_ssid.c_str());
-      WiFi.begin(sta_ssid.c_str(), (sta_password.length() > 0 ? sta_password.c_str() : NULL));
+  if (sta_enabled && sta_ssid.length() > 0) {
+    logPrintf("[STA] Dang ket noi vao mang nguon: %s (Toi da 4s)...", sta_ssid.c_str());
+    WiFi.setAutoReconnect(false);
+    WiFi.begin(sta_ssid.c_str(), (sta_password.length() > 0 ? sta_password.c_str() : NULL));
+    sta_conn_state = STA_STATE_CONNECTING;
+    sta_connect_start_time = millis();
 
-      unsigned long start_time = millis();
-      while (WiFi.status() != WL_CONNECTED && millis() - start_time < 10000) {
-        delay(400);
-        Serial.print(".");
-      }
-      Serial.println();
-    } else {
-      logMessage("[STA] Thiet bi chua cau hinh Wi-Fi nguon. Vui long vao Web Portal (10.51.31.254) hoac BLE Terminal de chon Wi-Fi.");
+    unsigned long start_time = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - start_time < 4000)) {
+      delay(200);
+      Serial.print(".");
     }
+    Serial.println();
 
     // Bước 10: Kiểm tra trạng thái Internet và thiết lập NAT hoặc Captive Portal
     if (WiFi.status() == WL_CONNECTED) {
+      sta_conn_state = STA_STATE_CONNECTED;
       logPrintf("[STA] Da ket noi Internet thanh cong! IP nhan: %s", WiFi.localIP().toString().c_str());
       configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
       enableNapt();
       stopCaptiveDns();
       configureSoftApDhcp(false);
     } else {
-      logMessage("[CANH BAO] Chua ket noi duoc Wi-Fi nguon. Kich hoat Captive Portal!");
+      logPrintf("[STA] Khong the ket noi Wi-Fi nguon luc khoi dong. Dung quet, khoa kenh SoftAP (%d) va nghi 30s.", current_effective_channel);
+      stopStaConnecting();
       startCaptiveDns();
     }
   } else {
-    logMessage("[MODE] Wi-Fi nguon dang TAT -> MANG NOI BO OFFLINE. Dien thoai dung 5G.");
-    disableNapt();
-    stopCaptiveDns();
-    configureSoftApDhcp(false);
+    sta_conn_state = STA_STATE_IDLE;
+    if (sta_enabled) {
+      logMessage("[STA] Thiet bi chua cau hinh Wi-Fi nguon. Vui long vao Web Portal (10.51.31.254) hoac BLE Terminal de chon Wi-Fi.");
+      startCaptiveDns();
+    } else {
+      logMessage("[MODE] Wi-Fi nguon dang TAT -> MANG NOI BO OFFLINE. Dien thoai dung 5G.");
+      disableNapt();
+      stopCaptiveDns();
+      configureSoftApDhcp(false);
+    }
   }
 
   logMessage("===> HE THONG GATEWAY + BLE SECURE + RANDOM DHCP DA SAN SANG! <===");
@@ -2841,32 +2889,63 @@ void loop() {
     }
   }
 
-  // 6. Giám sát trạng thái kết nối STA định kỳ mỗi 3 giây
-  if (millis() - last_sta_check > 3000) {
-    last_sta_check = millis();
-
-    if (sta_enabled) {
-      if (WiFi.status() == WL_CONNECTED) {
-        if (!napt_enabled) {
-          logMessage("[LOOP] STA da ket noi lai! Bat NAPT va tat Captive Portal.");
-          configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
-          enableNapt();
-          stopCaptiveDns();
-          configureSoftApDhcp(false);
-        }
-      } else {
-        if (napt_enabled) {
-          logMessage("[LOOP] STA mat ket noi! Tat NAPT va bat Captive Portal.");
-          disableNapt();
-          startCaptiveDns();
-        }
+  // 6. Quản lý trạng thái kết nối Wi-Fi nguồn (Non-blocking Reconnect State Machine)
+  if (sta_enabled && sta_ssid.length() > 0) {
+    if (WiFi.status() == WL_CONNECTED) {
+      if (sta_conn_state != STA_STATE_CONNECTED) {
+        sta_conn_state = STA_STATE_CONNECTED;
+      }
+      if (!napt_enabled) {
+        logMessage("[LOOP] STA da ket noi! Bat NAPT va tat Captive Portal.");
+        enableNapt();
+        stopCaptiveDns();
+        configureSoftApDhcp(false);
       }
     } else {
-      if (napt_enabled) disableNapt();
-      if (dns_captive_running) {
-        dnsServer.stop();
-        dns_captive_running = false;
+      if (napt_enabled) {
+        logMessage("[LOOP] STA mat ket noi! Tat NAPT va bat Captive Portal.");
+        disableNapt();
+        startCaptiveDns();
       }
+
+      if (sta_conn_state == STA_STATE_CONNECTED) {
+        // Vừa bị rớt mạng -> Ngắt quét, khóa lại kênh SoftAP, chờ 15s trước khi thử lại
+        stopStaConnecting();
+        sta_next_retry_time = millis() + 15000;
+      } else if (sta_conn_state == STA_STATE_CONNECTING) {
+        // Đang trong cửa sổ kết nối thử nghiệm (cho tối đa 4 giây)
+        if (millis() - sta_connect_start_time > 4000) {
+          logMessage("[STA] Het thoi gian cho (4s) khong thay router. Dung quet de dam bao on dinh SoftAP.");
+          stopStaConnecting();
+        }
+      } else if (sta_conn_state == STA_STATE_IDLE) {
+        // Đang ở trạng thái nghỉ: Radio 100% dành cho SoftAP
+        if (millis() >= sta_next_retry_time) {
+          // Chỉ thử lại nếu không bận các tác vụ quan trọng:
+          // 1. Không có client nào vừa mới kết nối vào SoftAP trong 10 giây qua
+          // 2. Không có tiến trình quét Wi-Fi ngầm nào đang chạy
+          // 3. Không có tiến trình kiểm tra / nạp OTA nào đang chạy
+          bool client_busy = (millis() - last_ap_client_connected_time < 10000);
+          bool scan_busy = (WiFi.scanComplete() == WIFI_SCAN_RUNNING);
+          bool ota_busy = (ota_check_state != OTA_CHECK_IDLE || pending_ota);
+
+          if (!client_busy && !scan_busy && !ota_busy) {
+            triggerStaConnect();
+          } else {
+            sta_next_retry_time = millis() + 5000; // Hoãn thêm 5s nếu đang bận
+          }
+        }
+      }
+    }
+  } else {
+    // Wi-Fi nguồn tắt hoặc chưa lưu SSID
+    if (sta_conn_state != STA_STATE_IDLE) {
+      sta_conn_state = STA_STATE_IDLE;
+    }
+    if (napt_enabled) disableNapt();
+    if (dns_captive_running) {
+      dnsServer.stop();
+      dns_captive_running = false;
     }
   }
 
@@ -2876,19 +2955,19 @@ void loop() {
     sta_enabled = pending_sta_mode_val;
 
     if (!sta_enabled) {
-      WiFi.disconnect(false);
+      WiFi.disconnect(true);
+      esp_wifi_disconnect();
       WiFi.mode(WIFI_AP);
+      esp_wifi_set_channel(current_effective_channel, WIFI_SECOND_CHAN_NONE);
+      sta_conn_state = STA_STATE_IDLE;
       disableNapt();
       stopCaptiveDns();
       configureSoftApDhcp(false);
-      delay(100);
+      delay(50);
       esp_wifi_deauth_sta(0);
       logMessage("[MODE] Da TAT Wi-Fi nguon -> Che do MANG NOI BO (Dien thoai dung 5G).");
     } else {
-      WiFi.mode(WIFI_AP_STA);
-      if (sta_ssid.length() > 0) {
-        WiFi.begin(sta_ssid.c_str(), (sta_password.length() > 0 ? sta_password.c_str() : NULL));
-      }
+      triggerStaConnect();
       configureSoftApDhcp(false);
       logMessage("[MODE] Da BAT Wi-Fi nguon -> Dang ket noi Internet...");
     }

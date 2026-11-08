@@ -1583,67 +1583,117 @@ bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &e
   return true;
 }
 
-// Helper thực hiện tải firmware và ghi Flash qua Native ESP-IDF HTTPS OTA (chỉ dùng 4KB bộ đệm stream)
+// Helper thực hiện tải firmware và ghi Flash qua Streaming esp_http_client + Update (tối ưu bộ nhớ, chống nghẽn BLE)
 bool executeOtaDownload(const String &dlUrl) {
-  logPrintf("[OTA] Bat dau tai firmware tu: %s (Free Heap: %u bytes | Max Block: %u bytes)", 
-            dlUrl.c_str(), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+  logPrintf("[OTA] Bat dau tai firmware tu: %s", dlUrl.c_str());
+  logPrintf("[OTA-MEM] Free Heap: %u bytes | Max Block: %u bytes", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
-  esp_http_client_config_t http_config = {};
-  http_config.url = dlUrl.c_str();
-  http_config.crt_bundle_attach = esp_crt_bundle_attach;
-  http_config.buffer_size = 4096;
-  http_config.buffer_size_tx = 1024;
-  http_config.timeout_ms = 30000;
-  http_config.skip_cert_common_name_check = true;
-  http_config.addr_type = HTTP_ADDR_TYPE_INET;
-  http_config.max_redirection_count = 5;
-  http_config.keep_alive_enable = true;
+  // Thu hồi RAM scan Wi-Fi và tạm dừng DNS captive để giải phóng tối đa bộ nhớ liên tục cho SSL
+  cached_scan_json = "[]";
+  if (dns_captive_running) {
+    dnsServer.stop();
+    dns_captive_running = false;
+  }
+  delay(200);
 
-  esp_https_ota_config_t ota_config = {};
-  ota_config.http_config = &http_config;
+  esp_http_client_config_t config = {};
+  config.url = dlUrl.c_str();
+  config.crt_bundle_attach = esp_crt_bundle_attach;
+  config.buffer_size = 2048;
+  config.buffer_size_tx = 512;
+  config.timeout_ms = 25000;
+  config.skip_cert_common_name_check = true;
+  config.addr_type = HTTP_ADDR_TYPE_INET;
+  config.max_redirection_count = 5;
 
-  esp_https_ota_handle_t https_ota_handle = NULL;
-  esp_err_t err = esp_https_ota_begin(&ota_config, &https_ota_handle);
-  if (err != ESP_OK) {
-    logPrintf("[OTA-LOI] Khong the bat dau HTTPS OTA (Ma loi: %s)", esp_err_to_name(err));
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  if (!client) {
+    logMessage("[OTA-LOI] Khong the khoi tao esp_http_client!");
     return false;
   }
 
-  int total_len = esp_https_ota_get_image_size(https_ota_handle);
-  logPrintf("[OTA] Kich thuoc Firmware: %d bytes (%.2f MB)", total_len, (float)total_len / (1024.0 * 1024.0));
+  esp_err_t err = esp_http_client_open(client, 0);
+  if (err != ESP_OK) {
+    logPrintf("[OTA-LOI] Khong the ket noi den may chu (Ma loi: %s)", esp_err_to_name(err));
+    esp_http_client_cleanup(client);
+    return false;
+  }
 
+  int content_length = esp_http_client_fetch_headers(client);
+  int status_code = esp_http_client_get_status_code(client);
+
+  if (status_code != 200 && status_code != 206) {
+    logPrintf("[OTA-LOI] May chu tra ve ma loi HTTP: %d", status_code);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return false;
+  }
+
+  size_t update_size = (content_length > 0) ? (size_t)content_length : UPDATE_SIZE_UNKNOWN;
+  if (content_length > 0) {
+    logPrintf("[OTA] Kich thuoc Firmware: %d bytes (%.2f MB)", content_length, (float)content_length / (1024.0 * 1024.0));
+  } else {
+    logMessage("[OTA] Kich thuoc Firmware: Dang chunked stream (khong co Content-Length)");
+  }
+
+  if (!Update.begin(update_size)) {
+    logPrintf("[OTA-LOI] Khong the khoi dong Update Flash (Ma loi: %d)", Update.getError());
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return false;
+  }
+
+  uint8_t ota_buf[1024];
+  int read_bytes = 0;
+  size_t total_written = 0;
   int prev_percent = -1;
-  while (1) {
-    err = esp_https_ota_perform(https_ota_handle);
-    if (err != ESP_ERR_HTTPS_OTA_IN_PROGRESS) {
+  unsigned long last_yield = millis();
+
+  while ((read_bytes = esp_http_client_read(client, (char *)ota_buf, sizeof(ota_buf))) > 0) {
+    size_t written = Update.write(ota_buf, read_bytes);
+    if (written != (size_t)read_bytes) {
+      logPrintf("[OTA-LOI] Ghi Flash that bai! (Da ghi: %u / %d)", total_written, content_length);
+      Update.abort();
       break;
     }
-    int len_read = esp_https_ota_get_image_len_read(https_ota_handle);
-    if (total_len > 0) {
-      int percent = (len_read * 100) / total_len;
+    total_written += written;
+
+    if (content_length > 0) {
+      int percent = (int)((total_written * 100) / content_length);
       if (percent != prev_percent && (percent % 10 == 0 || percent == 100)) {
         prev_percent = percent;
-        logPrintf("[OTA] Ghi Flash: %d%% (%d / %d bytes)", percent, len_read, total_len);
+        logPrintf("[OTA] Ghi Flash: %d%% (%u / %d bytes)", percent, total_written, content_length);
       }
+    } else {
+      if (total_written / (100 * 1024) != (total_written - written) / (100 * 1024)) {
+        logPrintf("[OTA] Ghi Flash: %u KB da tai", total_written / 1024);
+      }
+    }
+
+    // Nhường CPU cho stack BLE và lwIP duy trì kết nối không bị ngắt ('Connection lost')
+    if (millis() - last_yield > 20) {
+      vTaskDelay(pdMS_TO_TICKS(2));
+      last_yield = millis();
     }
   }
 
-  if (err != ESP_OK) {
-    logPrintf("[OTA-LOI] Loi qua trinh ghi Flash (Ma loi: %s)", esp_err_to_name(err));
-    esp_https_ota_abort(https_ota_handle);
+  esp_http_client_close(client);
+  esp_http_client_cleanup(client);
+
+  if (Update.hasError() || !Update.end(true)) {
+    logPrintf("[OTA-LOI] Hoan tat Update that bai (Ma loi: %d)", Update.getError());
     return false;
   }
 
-  esp_err_t ota_finish_err = esp_https_ota_finish(https_ota_handle);
-  if (ota_finish_err == ESP_OK) {
-    logMessage("[OTA] 🎉 Nap Flash thanh cong 100%! Dang khoi dong lai vao Firmware moi...");
-    delay(1000);
-    ESP.restart();
-    return true;
-  } else {
-    logPrintf("[OTA-LOI] Hoan tat OTA that bai (Ma loi: %s)", esp_err_to_name(ota_finish_err));
+  if (!Update.isFinished()) {
+    logMessage("[OTA-LOI] Update chua hoan tat day du!");
     return false;
   }
+
+  logPrintf("[OTA] 🎉 Nap Flash thanh cong 100%% (%u bytes)! Dang khoi dong lai vao Firmware moi...", total_written);
+  delay(1000);
+  ESP.restart();
+  return true;
 }
 
 // Tải file firmware .bin từ GitHub/CDN và nạp vào phân vùng OTA của bộ nhớ Flash
@@ -1654,7 +1704,7 @@ void performGithubOta(const String &binUrl) {
   }
 
   if (time(nullptr) < 1704067200) {
-    struct timeval tv = { .tv_sec = 1767225600, .tv_usec = 0 };
+    struct timeval tv = { .tv_sec = 1794121200, .tv_usec = 0 }; // 2026-11-08
     settimeofday(&tv, NULL);
   }
 
@@ -1681,6 +1731,7 @@ void performGithubOta(const String &binUrl) {
   bool ok = executeOtaDownload(primaryBinUrl);
   if (!ok && mirrorBinUrl.length() > 0 && mirrorBinUrl != primaryBinUrl) {
     logPrintf("[OTA] Thu lai tai firmware qua Mirror: %s", mirrorBinUrl.c_str());
+    delay(1000); // Cho TCP stack và heap ổn định lại trước khi thử Mirror
     executeOtaDownload(mirrorBinUrl);
   }
 }
@@ -2710,6 +2761,14 @@ void setup() {
     prefs.remove("sta_pass");
     prefs.putBool("sta_en", false);
     prefs.putBool("sta_clean_v139", true);
+
+    // Chuyen doi ma PIN cu 70213 sang ma PIN mac dinh moi 123456 mot lan duy nhat khi nang cap
+    uint32_t current_pin = prefs.getUInt("ble_pin", 123456);
+    if (current_pin == 70213) {
+      prefs.putUInt("ble_pin", 123456);
+      logMessage("[UPGRADE] Da cap nhat ma PIN BLE mac dinh moi: 123456");
+    }
+
     logMessage("[INIT] Mac dinh Wi-Fi nguon: DE TRONG (Tat Wi-Fi nguon). Chi luu khi ket noi lan dau thanh cong!");
   }
 
@@ -2722,9 +2781,7 @@ void setup() {
   if (ap_channel < 1 || ap_channel > 11) {
     if (ap_channel != 0) { // 0: Auto Channel
       ap_channel = 6;
-      prefs.begin("gateway", false);
       prefs.putUChar("ap_ch", 6);
-      prefs.end();
     }
   }
   ap_bssid_str   = prefs.getString("ap_bssid", "84:F1:47:4F:27:A0");
@@ -2734,11 +2791,7 @@ void setup() {
   dhcp_end_str   = prefs.getString("dhcp_end", "10.51.31.200"); // Dải IP cấp ngẫu nhiên 10.51.31.x cùng subnet Gateway
   tx_power_boost = prefs.getBool("tx_boost", false);            // Mặc định KHÔNG BẬT (15 dBm Standard)
   ble_enabled     = prefs.getBool("ble_en", true);               // Bật sóng Bluetooth LE
-  ble_pin         = prefs.getUInt("ble_pin", 123456);             // Mã PIN ghép đôi 6 số (123456)
-  if (ble_pin == 70213) {
-    ble_pin = 123456;
-    prefs.putUInt("ble_pin", 123456);
-  }
+  ble_pin         = prefs.getUInt("ble_pin", 123456);             // Mã PIN ghép đôi 6 số (mặc định: 123456)
   ota_version_url = prefs.getString("ota_url", "https://cdn.jsdelivr.net/gh/silversymphony/esp32-firmware@main/version.json");
 
   // Tự động đồng bộ Subnet Mask /24 (255.255.255.0) và dải IP cùng subnet với Gateway IP

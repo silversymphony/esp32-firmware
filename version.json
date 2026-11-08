@@ -1,5 +1,5 @@
 {
-  "version": "1.3.9",
-  "url": "https://cdn.jsdelivr.net/gh/silversymphony/esp32-firmware@main/esp32_v1.3.9/esp32_v1.3.9.ino.bin",
-  "changelog": "Bản phát hành v1.3.9: Bộ máy kết nối STA thông minh chống nhảy kênh bảo vệ SoftAP không bị gián đoạn; Wi-Fi nguồn mặc định luôn để trống (tắt STA khi chạy lần đầu), tự động dọn NVS cũ; cơ chế an toàn chỉ lưu Flash khi có kết nối lần đầu thành công; thêm nút Xóa Wi-Fi đã lưu (/api/forget_sta & WIFI:CLEAR); mã PIN BLE mặc định 123456."
+  "version": "1.4.0",
+  "url": "https://cdn.jsdelivr.net/gh/silversymphony/esp32-firmware@main/esp32_v1.4.0/esp32_v1.4.0.ino.bin",
+  "changelog": "Bản phát hành v1.4.0: Tối ưu hóa bộ nhớ OTA Streaming chống tràn RAM; duy trì kết nối BLE liên tục trong quá trình nạp Flash; sửa triệt để lỗi lưu mã PIN Bluetooth sau khi khởi động lại."
 }

@@ -13,7 +13,7 @@ Tất cả các thông số cấu hình trên Web Portal đều có thể cài �
 | **Trợ giúp & Trạng thái** | `HELP` hoặc `?` | `HELP` | In ra danh sách toàn bộ các lệnh có sẵn |
 | | `STATUS` | `STATUS` | Xem toàn bộ thông số mạng, IP, PIN, RAM, Uptime |
 | **Wi-Fi Nguồn (STA)** | `SCAN` | `SCAN` | Quét tất cả mạng Wi-Fi 2.4GHz xung quanh |
-| | `WIFI` | `WIFI:TenWifi,MatKhau` hoặc `WIFI:CLEAR` | Thử kết nối Wi-Fi nguồn (chỉ lưu khi kết nối thành công, mặc định để trống) |
+| | `WIFI` | `WIFI:TenWifiNguon,MatKhau` | Kết nối vào Wi-Fi nguồn (để trống pass nếu mở) |
 | | `STA` | `STA:ON` hoặc `STA:OFF` | Bật/tắt Wi-Fi nguồn (TẮT = Chế độ Mạng nội bộ để điện thoại dùng 5G) |
 | **Mạng Phát (SoftAP)** | `AP` | `AP:ODE - wireless WiFi,Ode6868@` | Đổi Tên (SSID) và Mật khẩu Wi-Fi phát ra |
 | | `APCH` | `APCH:6` hoặc `APCH:AUTO` | Đổi kênh phát (1 đến 13 hoặc 0: Auto) |
@@ -93,16 +93,14 @@ Tất cả các thông số cấu hình trên Web Portal đều có thể cài �
 ---
 
 ### 2.2. Nhóm Cấu Hình Mạng Nguồn (Internet STA)
-#### • `WIFI:<ssid>,<password>` hoặc `WIFI:CLEAR`
-- **Mục đích:** Cung cấp thông tin Wi-Fi nguồn cấp mạng Internet cho ESP32. ESP32 sẽ thử kết nối và **chỉ lưu vào bộ nhớ Flash NVS khi có kết nối lần đầu thành công**. Mặc định luôn để trống.
-- **`WIFI:CLEAR`:** Xóa sạch cấu hình Wi-Fi nguồn khỏi Flash NVS, đưa về trạng thái trống mặc định.
+#### • `WIFI:<ssid>,<password>`
+- **Mục đích:** Đổi Wi-Fi nguồn cấp mạng Internet cho ESP32. Mạch sẽ tự động lưu NVS và kết nối ngay.
 - **Ví dụ có mật khẩu:** `WIFI:Home_WiFi_5G,Pass12345`
 - **Ví dụ không có mật khẩu (Wi-Fi mở):** `WIFI:Coffee_Free`
-- **Ví dụ xóa Wi-Fi:** `WIFI:CLEAR`
 - **Phản hồi:**
   ```text
-  [STA] BLE dat Wi-Fi nguon: 'Home_WiFi_5G'. Dang thu ket noi (chi luu Flash NVS khi ket noi thanh cong)...
-  [OK] ESP32 dang thu ket noi vao: Home_WiFi_5G. Khi ket noi thanh cong se tu dong luu vao Flash!
+  [STA] Da cap nhat Wi-Fi nguon: 'Home_WiFi_5G'. Dang ket noi lai...
+  [OK] Da luu Wi-Fi! ESP32 dang ket noi vao: Home_WiFi_5G
   ```
 
 #### • `STA:ON` hoặc `STA:OFF`

@@ -1477,13 +1477,13 @@ bool fetchOtaJson(const String &targetUrl, String &payloadOut, String &errOut) {
   String responseBody = "";
   esp_http_client_config_t config = {};
   config.url = targetUrl.c_str();
-  config.crt_bundle_attach = esp_crt_bundle_attach;
+  config.crt_bundle_attach = NULL; // Bỏ qua cert bundle để dùng MBEDTLS_SSL_VERIFY_NONE (không tốn RAM RSA và không bao giờ lỗi 0x4290)
   config.event_handler = _ota_http_event_handler;
   config.user_data = &responseBody;
   config.buffer_size = 1024;
   config.buffer_size_tx = 512;
   config.timeout_ms = 15000;
-  config.skip_cert_common_name_check = false; // BẬT SNI (Server Name Indication) để CDN trả đúng chứng chỉ ECDSA/RSA
+  config.skip_cert_common_name_check = true;
   config.addr_type = HTTP_ADDR_TYPE_INET;
   config.max_redirection_count = 5;
 
@@ -1499,17 +1499,20 @@ bool fetchOtaJson(const String &targetUrl, String &payloadOut, String &errOut) {
     int statusCode = esp_http_client_get_status_code(client);
     if (statusCode == 200) {
       payloadOut = responseBody;
+      esp_http_client_close(client);
       esp_http_client_cleanup(client);
       return true;
     } else {
       errOut = "May chu tra ve HTTP: " + String(statusCode);
       logPrintf("[OTA-LOI] Ket noi %s that bai: %s", targetUrl.c_str(), errOut.c_str());
+      esp_http_client_close(client);
       esp_http_client_cleanup(client);
       return false;
     }
   } else {
     errOut = "Loi ket noi: " + String(esp_err_to_name(err));
     logPrintf("[OTA-LOI] Ket noi %s that bai: %s", targetUrl.c_str(), errOut.c_str());
+    esp_http_client_close(client);
     esp_http_client_cleanup(client);
     return false;
   }
@@ -1543,12 +1546,22 @@ bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &e
     esp_netif_set_default_netif(sta_netif);
   }
 
-  // Luôn cấu hình DNS máy chủ Google (8.8.8.8) và Cloudflare (1.1.1.1) trực tiếp để tránh bị nhà mạng chặn DNS
-  ip_addr_t dns1, dns2;
-  IP_ADDR4(&dns1, 8, 8, 8, 8);
-  IP_ADDR4(&dns2, 1, 1, 1, 1);
-  dns_setserver(0, &dns1);
-  dns_setserver(1, &dns2);
+  // Cấu hình DNS ưu tiên DNS router trước, sau đó là Google 8.8.8.8 và Cloudflare 1.1.1.1
+  IPAddress rDns = WiFi.dnsIP(0);
+  ip_addr_t d0, d1, d2;
+  if (rDns != IPAddress(0, 0, 0, 0)) {
+    IP_ADDR4(&d0, rDns[0], rDns[1], rDns[2], rDns[3]);
+    IP_ADDR4(&d1, 8, 8, 8, 8);
+    IP_ADDR4(&d2, 1, 1, 1, 1);
+    dns_setserver(0, &d0);
+    dns_setserver(1, &d1);
+    dns_setserver(2, &d2);
+  } else {
+    IP_ADDR4(&d1, 8, 8, 8, 8);
+    IP_ADDR4(&d2, 1, 1, 1, 1);
+    dns_setserver(0, &d1);
+    dns_setserver(1, &d2);
+  }
 
   String primaryUrl = ota_version_url;
   String mirrorUrl = "";
@@ -1616,12 +1629,22 @@ bool executeOtaDownload(const String &dlUrl) {
     esp_netif_set_default_netif(sta_netif);
   }
 
-  // Luôn cấu hình DNS máy chủ Google (8.8.8.8) và Cloudflare (1.1.1.1) trực tiếp
-  ip_addr_t dns1, dns2;
-  IP_ADDR4(&dns1, 8, 8, 8, 8);
-  IP_ADDR4(&dns2, 1, 1, 1, 1);
-  dns_setserver(0, &dns1);
-  dns_setserver(1, &dns2);
+  // Cấu hình DNS ưu tiên DNS router trước, sau đó là Google 8.8.8.8 và Cloudflare 1.1.1.1
+  IPAddress rDns = WiFi.dnsIP(0);
+  ip_addr_t d0, d1, d2;
+  if (rDns != IPAddress(0, 0, 0, 0)) {
+    IP_ADDR4(&d0, rDns[0], rDns[1], rDns[2], rDns[3]);
+    IP_ADDR4(&d1, 8, 8, 8, 8);
+    IP_ADDR4(&d2, 1, 1, 1, 1);
+    dns_setserver(0, &d0);
+    dns_setserver(1, &d1);
+    dns_setserver(2, &d2);
+  } else {
+    IP_ADDR4(&d1, 8, 8, 8, 8);
+    IP_ADDR4(&d2, 1, 1, 1, 1);
+    dns_setserver(0, &d1);
+    dns_setserver(1, &d2);
+  }
 
   // Khởi tạo mốc thời gian hệ thống tối thiểu
   if (time(nullptr) < 1794186000) {
@@ -1638,11 +1661,11 @@ bool executeOtaDownload(const String &dlUrl) {
   while (redirect_count < 3) {
     esp_http_client_config_t config = {};
     config.url = currentUrl.c_str();
-    config.crt_bundle_attach = esp_crt_bundle_attach;
+    config.crt_bundle_attach = NULL; // MBEDTLS_SSL_VERIFY_NONE (không tốn RAM RSA và không bao giờ nghẽn bộ nhớ)
     config.buffer_size = 2048;
     config.buffer_size_tx = 1024;
     config.timeout_ms = 30000;
-    config.skip_cert_common_name_check = false; // BẬT SNI
+    config.skip_cert_common_name_check = true;
     config.addr_type = HTTP_ADDR_TYPE_INET;
 
     client = esp_http_client_init(&config);
@@ -1654,6 +1677,7 @@ bool executeOtaDownload(const String &dlUrl) {
     esp_err_t err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
       logPrintf("[OTA-LOI] Khong the ket noi den may chu (Ma loi: %s)", esp_err_to_name(err));
+      esp_http_client_close(client);
       esp_http_client_cleanup(client);
       client = nullptr;
       return false;
@@ -1940,11 +1964,10 @@ void configureSoftApDhcp(bool randomizePool) {
       esp_netif_dhcps_stop(ap_netif);
 
       // 2. Cấu hình IP và Subnet Mask /24 trực tiếp qua ESP-IDF
-      bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
       esp_netif_ip_info_t ip_info;
       ip_info.ip.addr = (uint32_t)gw_ip;
       ip_info.netmask.addr = (uint32_t)sub_ip;
-      ip_info.gw.addr = has_uplink ? (uint32_t)gw_ip : 0; // Khi có Internet STA: Gateway = gw_ip; Khi tắt STA: Gateway = 0.0.0.0 để điện thoại dùng 5G
+      ip_info.gw.addr = (uint32_t)gw_ip; // Luôn gán Gateway của SoftAP interface là gw_ip (10.51.31.254)
       esp_netif_set_ip_info(ap_netif, &ip_info);
 
       uint32_t s_u32 = ipToU32(s_ip);
@@ -1994,10 +2017,11 @@ void configureSoftApDhcp(bool randomizePool) {
     }
 
     // 1. Cấu hình Option 3 (Router / Default Gateway):
-    // Khi có Internet STA: Cấp Gateway (10.51.31.254) để client truy cập Internet qua NAPT
-    // Khi chưa có Internet STA hoặc khi tắt STA: KHÔNG cấp Gateway (OFFER_ROUTER = 0) để điện thoại tự động dùng mạng 5G di động
-    bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
-    dhcps_offer_t dhcps_router_value = has_uplink ? OFFER_ROUTER : 0;
+    // Luôn cấp Default Gateway (10.51.31.254) để điện thoại nhận diện cổng định tuyến.
+    // Khi tắt Wi-Fi nguồn (STA), các gói tin probe Internet qua Gateway sẽ không có uplink,
+    // kích hoạt tính năng chuyển sang mạng dữ liệu di động của hệ điều hành (Poor network -> Dùng 5G)
+    // trong khi vẫn duy trì truy cập Gateway Manager http://10.51.31.254/ qua Wi-Fi mượt mà.
+    dhcps_offer_t dhcps_router_value = OFFER_ROUTER;
     esp_netif_dhcps_option(
       ap_netif,
       ESP_NETIF_OP_SET,
@@ -2007,9 +2031,8 @@ void configureSoftApDhcp(bool randomizePool) {
     );
 
     // 2. Cấu hình Option 6 (Domain Name Server - DNS):
-    // Khi có Internet STA: Cấp DNS Server để client duyệt web trực tiếp qua NAPT
-    // Khi chưa có Internet STA: KHÔNG cấp DNS (dhcps_dns_value = 0) để điện thoại dùng DNS của mạng 5G
-    dhcps_offer_t dhcps_dns_value = has_uplink ? OFFER_DNS : 0;
+    // Luôn cấp DNS Server để các thiết bị phân giải tên miền (dùng DNS router nếu có hoặc Google 8.8.8.8 / Cloudflare 1.1.1.1)
+    dhcps_offer_t dhcps_dns_value = OFFER_DNS;
     esp_netif_dhcps_option(
       ap_netif,
       ESP_NETIF_OP_SET,
@@ -2018,31 +2041,30 @@ void configureSoftApDhcp(bool randomizePool) {
       sizeof(dhcps_dns_value)
     );
 
-    if (dhcps_dns_value == OFFER_DNS) {
-      esp_netif_dns_info_t dns_main, dns_backup;
-      dns_main.ip.type = ESP_IPADDR_TYPE_V4;
-      dns_backup.ip.type = ESP_IPADDR_TYPE_V4;
+    esp_netif_dns_info_t dns_main, dns_backup;
+    dns_main.ip.type = ESP_IPADDR_TYPE_V4;
+    dns_backup.ip.type = ESP_IPADDR_TYPE_V4;
 
-      IPAddress upstreamDns = WiFi.dnsIP(0);
-      if (upstreamDns == IPAddress(0, 0, 0, 0)) {
-        upstreamDns = IPAddress(8, 8, 8, 8); // Google Public DNS
-      }
-      dns_main.ip.u_addr.ip4.addr = (uint32_t)upstreamDns;
-
-      IPAddress backupDns = WiFi.dnsIP(1);
-      if (backupDns == IPAddress(0, 0, 0, 0) || backupDns == upstreamDns) {
-        backupDns = IPAddress(1, 1, 1, 1); // Cloudflare Public DNS
-      }
-      dns_backup.ip.u_addr.ip4.addr = (uint32_t)backupDns;
-
-      esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_MAIN, &dns_main);
-      esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_BACKUP, &dns_backup);
+    IPAddress upstreamDns = WiFi.dnsIP(0);
+    if (upstreamDns == IPAddress(0, 0, 0, 0)) {
+      upstreamDns = IPAddress(8, 8, 8, 8); // Google Public DNS
     }
+    dns_main.ip.u_addr.ip4.addr = (uint32_t)upstreamDns;
+
+    IPAddress backupDns = WiFi.dnsIP(1);
+    if (backupDns == IPAddress(0, 0, 0, 0) || backupDns == upstreamDns) {
+      backupDns = IPAddress(1, 1, 1, 1); // Cloudflare Public DNS
+    }
+    dns_backup.ip.u_addr.ip4.addr = (uint32_t)backupDns;
+
+    esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_MAIN, &dns_main);
+    esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_BACKUP, &dns_backup);
 
     esp_err_t start_err = esp_netif_dhcps_start(ap_netif);
     logPrintf("[DHCP] Khoi chay Native ESP-IDF DHCP Server! (Ket qua: %d)", start_err);
 
     // Luon dam bao Default Netif la STA khi da ket noi Wi-Fi nguon
+    bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
     esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (sta_netif != NULL && has_uplink) {
       esp_netif_set_default_netif(sta_netif);

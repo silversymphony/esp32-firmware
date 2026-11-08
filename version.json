@@ -1,5 +1,5 @@
 {
   "version": "1.3.8",
   "url": "https://cdn.jsdelivr.net/gh/silversymphony/esp32-firmware@main/esp32_v1.3.8/esp32_v1.3.8.ino.bin",
-  "changelog": "Bản phát hành v1.3.8: Tự động đồng bộ Gateway Manager (10.51.31.254) cùng dải Subnet /24 (255.255.255.0) với DHCP Pool (10.51.31.10 - 200), khắc phục triệt để lỗi không truy cập được Gateway Manager khi điện thoại dùng 5G; sửa lỗi kiểm tra OTA báo connect bằng CDN jsDelivr kết hợp dự phòng GitHub và DNS trực tiếp Google 8.8.8.8 / Cloudflare 1.1.1.1; mã PIN BLE mặc định 123456, mặc định tắt Wi-Fi nguồn lần đầu."
+  "changelog": "Bản phát hành v1.3.8: Tự động đồng bộ Gateway Manager (10.51.31.254) cùng dải Subnet /24 với DHCP Pool (10.51.31.10 - 200); Bộ máy kết nối STA thông minh bảo vệ SoftAP không bị nhảy kênh khi mất Wi-Fi nguồn; Wi-Fi nguồn mặc định luôn để trống (tắt STA), chỉ lưu Flash khi có kết nối lần đầu thành công; sửa lỗi OTA bằng CDN jsDelivr + DNS dự phòng; mã PIN BLE mặc định 123456."
 }

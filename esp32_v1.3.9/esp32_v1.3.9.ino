@@ -520,6 +520,8 @@ void handleBleCommand(String cmd) {
       disableNapt();
       stopCaptiveDns();
       configureSoftApDhcp(false);
+      delay(50);
+      esp_wifi_deauth_sta(0);
       sendResponse("[OK] Da xoa trang Wi-Fi nguon! Mac dinh tro ve de trong.");
       return;
     }
@@ -1472,12 +1474,11 @@ bool fetchOtaJson(const String &targetUrl, String &payloadOut, String &errOut) {
   String responseBody = "";
   esp_http_client_config_t config = {};
   config.url = targetUrl.c_str();
-  config.crt_bundle_attach = esp_crt_bundle_attach;
   config.event_handler = _ota_http_event_handler;
   config.user_data = &responseBody;
   config.buffer_size = 1024;
   config.buffer_size_tx = 512;
-  config.timeout_ms = 8000;
+  config.timeout_ms = 15000;
   config.skip_cert_common_name_check = true;
   config.addr_type = HTTP_ADDR_TYPE_INET;
   config.max_redirection_count = 5;
@@ -1522,8 +1523,8 @@ bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &e
   }
 
   // Khởi tạo mốc thời gian tối thiểu hợp lệ để mbedTLS không từ chối chứng chỉ SSL
-  if (time(nullptr) < 1704067200) {
-    struct timeval tv = { .tv_sec = 1767225600, .tv_usec = 0 }; // 2026-01-01
+  if (time(nullptr) < 1794186000) {
+    struct timeval tv = { .tv_sec = 1794186000, .tv_usec = 0 }; // 2026-11-09
     settimeofday(&tv, NULL);
   }
   configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
@@ -1596,36 +1597,78 @@ bool executeOtaDownload(const String &dlUrl) {
   }
   delay(200);
 
-  esp_http_client_config_t config = {};
-  config.url = dlUrl.c_str();
-  config.crt_bundle_attach = esp_crt_bundle_attach;
-  config.buffer_size = 2048;
-  config.buffer_size_tx = 512;
-  config.timeout_ms = 25000;
-  config.skip_cert_common_name_check = true;
-  config.addr_type = HTTP_ADDR_TYPE_INET;
-  config.max_redirection_count = 5;
-
-  esp_http_client_handle_t client = esp_http_client_init(&config);
-  if (!client) {
-    logMessage("[OTA-LOI] Khong the khoi tao esp_http_client!");
-    return false;
+  // Đảm bảo default netif là sta_netif trước khi kết nối HTTPS ra ngoài
+  esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+  if (sta_netif != NULL) {
+    esp_netif_set_default_netif(sta_netif);
   }
 
-  esp_err_t err = esp_http_client_open(client, 0);
-  if (err != ESP_OK) {
-    logPrintf("[OTA-LOI] Khong the ket noi den may chu (Ma loi: %s)", esp_err_to_name(err));
-    esp_http_client_cleanup(client);
-    return false;
+  // Luôn cấu hình DNS máy chủ Google (8.8.8.8) và Cloudflare (1.1.1.1) trực tiếp
+  ip_addr_t dns1, dns2;
+  IP_ADDR4(&dns1, 8, 8, 8, 8);
+  IP_ADDR4(&dns2, 1, 1, 1, 1);
+  dns_setserver(0, &dns1);
+  dns_setserver(1, &dns2);
+
+  // Khởi tạo mốc thời gian hệ thống tối thiểu
+  if (time(nullptr) < 1794186000) {
+    struct timeval tv = { .tv_sec = 1794186000, .tv_usec = 0 }; // 2026-11-09
+    settimeofday(&tv, NULL);
   }
 
-  int content_length = esp_http_client_fetch_headers(client);
-  int status_code = esp_http_client_get_status_code(client);
+  String currentUrl = dlUrl;
+  esp_http_client_handle_t client = nullptr;
+  int status_code = 0;
+  int content_length = 0;
+  int redirect_count = 0;
+
+  while (redirect_count < 3) {
+    esp_http_client_config_t config = {};
+    config.url = currentUrl.c_str();
+    config.buffer_size = 2048;
+    config.buffer_size_tx = 512;
+    config.timeout_ms = 25000;
+    config.skip_cert_common_name_check = true;
+    config.addr_type = HTTP_ADDR_TYPE_INET;
+
+    client = esp_http_client_init(&config);
+    if (!client) {
+      logMessage("[OTA-LOI] Khong the khoi tao esp_http_client!");
+      return false;
+    }
+
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+      logPrintf("[OTA-LOI] Khong the ket noi den may chu (Ma loi: %s)", esp_err_to_name(err));
+      esp_http_client_cleanup(client);
+      client = nullptr;
+      return false;
+    }
+
+    content_length = esp_http_client_fetch_headers(client);
+    status_code = esp_http_client_get_status_code(client);
+
+    if (status_code == 301 || status_code == 302 || status_code == 307) {
+      char *loc = nullptr;
+      if (esp_http_client_get_header(client, "Location", &loc) == ESP_OK && loc != nullptr && strlen(loc) > 0) {
+        logPrintf("[OTA] Chuyen huong HTTP %d -> %s", status_code, loc);
+        currentUrl = String(loc);
+        redirect_count++;
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        client = nullptr;
+        continue;
+      }
+    }
+    break;
+  }
 
   if (status_code != 200 && status_code != 206) {
     logPrintf("[OTA-LOI] May chu tra ve ma loi HTTP: %d", status_code);
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
+    if (client) {
+      esp_http_client_close(client);
+      esp_http_client_cleanup(client);
+    }
     return false;
   }
 
@@ -1703,8 +1746,8 @@ void performGithubOta(const String &binUrl) {
     return;
   }
 
-  if (time(nullptr) < 1704067200) {
-    struct timeval tv = { .tv_sec = 1794121200, .tv_usec = 0 }; // 2026-11-08
+  if (time(nullptr) < 1794186000) {
+    struct timeval tv = { .tv_sec = 1794186000, .tv_usec = 0 }; // 2026-11-09
     settimeofday(&tv, NULL);
   }
 
@@ -2213,11 +2256,24 @@ void handleApiPowerBoost() {
 
 // API: Cài đặt Bluetooth LE (Bật/tắt sóng và đổi mã PIN)
 void handleApiSaveBle() {
+  String pinArg = "";
   if (server.hasArg("pin")) {
-    String p = server.arg("pin");
-    p.trim();
-    if (p.length() == 6 && isValidPin(p)) {
-      ble_pin = p.toInt();
+    pinArg = server.arg("pin");
+  } else if (server.hasArg("plain")) {
+    String plain = server.arg("plain");
+    int pIdx = plain.indexOf("pin=");
+    if (pIdx >= 0) {
+      int amp = plain.indexOf('&', pIdx);
+      pinArg = (amp >= 0) ? plain.substring(pIdx + 4, amp) : plain.substring(pIdx + 4);
+    } else {
+      pinArg = parseJsonValue(plain, "pin");
+    }
+  }
+  pinArg.trim();
+
+  if (pinArg.length() > 0) {
+    if (pinArg.length() == 6 && isValidPin(pinArg)) {
+      ble_pin = pinArg.toInt();
       prefs.begin("gateway", false);
       prefs.putUInt("ble_pin", ble_pin);
       prefs.end();
@@ -2233,6 +2289,14 @@ void handleApiSaveBle() {
     String en = server.arg("enabled");
     bool newEn = (en == "1" || en.equalsIgnoreCase("true"));
     setBleRadio(newEn);
+  } else if (server.hasArg("plain")) {
+    String plain = server.arg("plain");
+    int eIdx = plain.indexOf("enabled=");
+    if (eIdx >= 0) {
+      int amp = plain.indexOf('&', eIdx);
+      String val = (amp >= 0) ? plain.substring(eIdx + 8, amp) : plain.substring(eIdx + 8);
+      setBleRadio(val == "1" || val.equalsIgnoreCase("true"));
+    }
   }
 
   char pinStr[10];
@@ -2384,6 +2448,8 @@ void handleApiForgetSta() {
   disableNapt();
   stopCaptiveDns();
   configureSoftApDhcp(false);
+  delay(50);
+  esp_wifi_deauth_sta(0);
 
   logMessage("[STA] Da xoa trang Wi-Fi nguon khoi Flash NVS (Mac dinh de trong).");
   server.send(200, "application/json", "{\"success\":true,\"msg\":\"Da xoa Wi-Fi nguon! Bo nho Flash tro ve trang thai de trong.\"}");
@@ -2750,17 +2816,15 @@ void setup() {
 
   // Bước 1: Tải thông số từ bộ nhớ Flash NVS
   prefs.begin("gateway", false);
-  String installed_ver = prefs.getString("fw_installed_ver", "");
-  bool sta_clean = prefs.getBool("sta_clean_v139", false);
+  String installed_ver = prefs.getString("fw_ver", "");
 
-  if (installed_ver != FIRMWARE_VERSION || !sta_clean) {
+  if (installed_ver != FIRMWARE_VERSION) {
     logPrintf("[UPGRADE] Khoi tao phien ban: v%s (Ban cu: %s).", FIRMWARE_VERSION.c_str(), installed_ver.length() > 0 ? installed_ver.c_str() : "None");
-    prefs.putString("fw_installed_ver", FIRMWARE_VERSION);
-    // Tu ban nay: mac dinh luon de trong Wi-Fi nguon, khong luu truoc. Khi co ket noi lan dau moi luu.
+    prefs.putString("fw_ver", FIRMWARE_VERSION);
+    // Khi nap firmware moi lan dau: mac dinh luon de trong Wi-Fi nguon, tat Wi-Fi nguon
     prefs.remove("sta_ssid");
     prefs.remove("sta_pass");
     prefs.putBool("sta_en", false);
-    prefs.putBool("sta_clean_v139", true);
 
     // Chuyen doi ma PIN cu 70213 sang ma PIN mac dinh moi 123456 mot lan duy nhat khi nang cap
     uint32_t current_pin = prefs.getUInt("ble_pin", 123456);

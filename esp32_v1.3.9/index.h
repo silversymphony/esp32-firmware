@@ -1003,7 +1003,7 @@ function renderStatus(d) {
     bToggle.checked = false;
   }
 
-  if (!document.getElementById('inputBlePin').value && d.ble_pin) {
+  if (document.activeElement !== document.getElementById('inputBlePin')) {
     document.getElementById('inputBlePin').value = pinFormatted;
   }
 
@@ -1122,10 +1122,11 @@ function togglePowerBoost(cb) {
 
 function toggleBleRadio(cb) {
   var isEn = cb.checked;
-  var data = new URLSearchParams();
-  data.append('enabled', isEn ? '1' : '0');
-
-  fetch('/api/save_ble', { method: 'POST', body: data })
+  fetch('/api/save_ble', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'enabled=' + (isEn ? '1' : '0')
+  })
     .then(function(res) { return res.json(); })
     .then(function(d) {
       updateStatus();
@@ -1142,14 +1143,23 @@ function saveBlePin() {
     alert(currentLang === 'en' ? 'Bluetooth PIN must be exactly 6 digits (0-9)!' : 'Mã PIN Bluetooth phải gồm đúng 6 chữ số (0-9)!');
     return;
   }
-  var data = new URLSearchParams();
-  data.append('pin', pin);
 
-  fetch('/api/save_ble', { method: 'POST', body: data })
+  fetch('/api/save_ble', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'pin=' + encodeURIComponent(pin)
+  })
     .then(function(res) { return res.json(); })
     .then(function(d) {
-      alert((currentLang === 'en' ? 'Bluetooth PIN updated successfully: ' : 'Đã cập nhật mã PIN Bluetooth thành công: ') + pin);
-      updateStatus();
+      if (d.success) {
+        alert((currentLang === 'en' ? 'Bluetooth PIN updated successfully: ' : 'Đã cập nhật mã PIN Bluetooth thành công: ') + pin);
+        if (d.ble_pin) {
+          document.getElementById('inputBlePin').value = d.ble_pin;
+        }
+        updateStatus();
+      } else {
+        alert((currentLang === 'en' ? 'Error: ' : 'Lỗi: ') + (d.error || 'Update failed'));
+      }
     })
     .catch(function(err) { alert(currentLang === 'en' ? 'Error saving PIN!' : 'Lỗi khi lưu mã PIN!'); });
 }

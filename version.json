@@ -1,5 +1,5 @@
 {
   "version": "1.4.0",
   "url": "https://cdn.jsdelivr.net/gh/silversymphony/esp32-firmware@main/esp32_v1.4.0/esp32_v1.4.0.ino.bin",
-  "changelog": "Bản phát hành v1.4.0: Tối ưu hóa bộ nhớ OTA Streaming chống tràn RAM; duy trì kết nối BLE liên tục trong quá trình nạp Flash; sửa triệt để lỗi lưu mã PIN Bluetooth sau khi khởi động lại."
+  "changelog": "Bản phát hành v1.4.0 (OTA Test): Khắc phục lỗi NVS key làm reset cấu hình khi reboot; sửa cập nhật mã PIN BLE từ Web Portal; tối ưu chuyển mạng 5G khi tắt Wi-Fi nguồn; tối ưu cơ chế truyền tải HTTPS OTA chống lỗi kết nối."
 }

@@ -1474,6 +1474,7 @@ bool fetchOtaJson(const String &targetUrl, String &payloadOut, String &errOut) {
   String responseBody = "";
   esp_http_client_config_t config = {};
   config.url = targetUrl.c_str();
+  config.crt_bundle_attach = esp_crt_bundle_attach;
   config.event_handler = _ota_http_event_handler;
   config.user_data = &responseBody;
   config.buffer_size = 1024;
@@ -1625,9 +1626,10 @@ bool executeOtaDownload(const String &dlUrl) {
   while (redirect_count < 3) {
     esp_http_client_config_t config = {};
     config.url = currentUrl.c_str();
+    config.crt_bundle_attach = esp_crt_bundle_attach;
     config.buffer_size = 2048;
-    config.buffer_size_tx = 512;
-    config.timeout_ms = 25000;
+    config.buffer_size_tx = 1024;
+    config.timeout_ms = 30000;
     config.skip_cert_common_name_check = true;
     config.addr_type = HTTP_ADDR_TYPE_INET;
 
@@ -1922,11 +1924,10 @@ void configureSoftApDhcp(bool randomizePool) {
       esp_netif_dhcps_stop(ap_netif);
 
       // 2. Cấu hình IP và Subnet Mask /24 trực tiếp qua ESP-IDF
-      bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
       esp_netif_ip_info_t ip_info;
       ip_info.ip.addr = (uint32_t)gw_ip;
       ip_info.netmask.addr = (uint32_t)sub_ip;
-      ip_info.gw.addr = has_uplink ? (uint32_t)gw_ip : 0; // Khi có Internet STA: Gateway = gw_ip để DHCP cấp Option 3 cho client; Khi tắt STA: Gateway = 0.0.0.0 để điện thoại dùng 5G
+      ip_info.gw.addr = (uint32_t)gw_ip; // Luôn gán Gateway của SoftAP interface là gw_ip (10.51.31.254)
       esp_netif_set_ip_info(ap_netif, &ip_info);
 
       uint32_t s_u32 = ipToU32(s_ip);
@@ -1990,10 +1991,11 @@ void configureSoftApDhcp(bool randomizePool) {
     }
 
     // 1. Cấu hình Option 3 (Router / Default Gateway):
-    // Chỉ cấp Gateway khi THỰC SỰ có kết nối Wi-Fi nguồn (has_uplink)
-    // Khi chưa có Internet STA hoặc khi tắt STA (chế độ 5G): TẮT Option 3 (OFFER_ROUTER = 0) -> Điện thoại dùng 5G không bị mất mạng!
-    bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
-    dhcps_offer_t dhcps_router_value = has_uplink ? OFFER_ROUTER : 0;
+    // Luôn cấp Default Gateway (10.51.31.254) để điện thoại nhận diện mạng có cổng định tuyến.
+    // Khi tắt Wi-Fi nguồn (STA), các gói tin probe Internet qua Gateway sẽ không có phản hồi,
+    // kích hoạt tính năng chuyển sang mạng dữ liệu di động của hệ điều hành (Poor network -> Dùng 5G)
+    // trong khi vẫn duy trì truy cập Gateway Manager http://10.51.31.254/ qua Wi-Fi mượt mà.
+    dhcps_offer_t dhcps_router_value = OFFER_ROUTER;
     esp_netif_dhcps_option(
       ap_netif,
       ESP_NETIF_OP_SET,
@@ -2003,9 +2005,8 @@ void configureSoftApDhcp(bool randomizePool) {
     );
 
     // 2. Cấu hình Option 6 (Domain Name Server - DNS):
-    // Khi có Internet STA: Cấp DNS Server để client duyệt web trực tiếp qua NAPT
-    // Khi chưa có Internet STA: KHÔNG cấp DNS (dhcps_dns_value = 0) để điện thoại dùng DNS 5G
-    dhcps_offer_t dhcps_dns_value = has_uplink ? OFFER_DNS : 0;
+    // Luôn cấp DNS Server để các thiết bị phân giải tên miền (dùng DNS router nếu có hoặc Google 8.8.8.8 / Cloudflare 1.1.1.1)
+    dhcps_offer_t dhcps_dns_value = OFFER_DNS;
     esp_netif_dhcps_option(
       ap_netif,
       ESP_NETIF_OP_SET,
@@ -2039,6 +2040,7 @@ void configureSoftApDhcp(bool randomizePool) {
     logPrintf("[DHCP] Khoi chay Native ESP-IDF DHCP Server! (Ket qua: %d)", start_err);
 
     // Luon dam bao Default Netif la STA khi da ket noi Wi-Fi nguon
+    bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
     esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (sta_netif != NULL && has_uplink) {
       esp_netif_set_default_netif(sta_netif);
@@ -2103,6 +2105,13 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
       esp_netif_set_default_netif(sta_netif);
     }
 
+    // Thiết lập DNS máy chủ lwIP toàn cục để phân giải HTTPS OTA tin cậy
+    ip_addr_t d1, d2;
+    IP_ADDR4(&d1, 8, 8, 8, 8);
+    IP_ADDR4(&d2, 1, 1, 1, 1);
+    dns_setserver(0, &d1);
+    dns_setserver(1, &d2);
+
     enableNapt();
     stopCaptiveDns();
     configureSoftApDhcp(false);
@@ -2136,9 +2145,9 @@ void handleCaptiveRedirect() {
   String uri = server.uri();
   String host = server.hostHeader();
 
-  // 1. Khi CÓ kết nối Internet Wi-Fi nguồn (hoặc khi ở chế độ 5G !sta_enabled):
+  // 1. Khi CÓ kết nối Internet Wi-Fi nguồn:
   // Phản hồi Success / 204 ngay lập tức cho các probe kiểm tra của điện thoại để điện thoại nhận biết đã có Internet
-  if ((sta_enabled && WiFi.status() == WL_CONNECTED) || !sta_enabled) {
+  if (sta_enabled && WiFi.status() == WL_CONNECTED) {
     if (uri.indexOf("hotspot-detect") >= 0 || uri.indexOf("success.html") >= 0 || uri.indexOf("canonical") >= 0 ||
         host.indexOf("apple") >= 0 || host.indexOf("airport") >= 0 || host.indexOf("ibook") >= 0 || 
         host.indexOf("itools") >= 0 || host.indexOf("thinkdifferent") >= 0) {
@@ -2170,7 +2179,17 @@ void handleCaptiveRedirect() {
     return;
   }
 
-  // 2. Khi đang bật Wi-Fi nguồn nhưng CHƯA có mạng (chờ cấu hình): chuyển hướng về Web Portal để mở Captive Portal
+  // 2. Khi đang ở chế độ Mạng nội bộ Offline (tắt STA): Không trả lời 200/204 giả mạo để điện thoại kích hoạt Poor Network -> Dùng 5G
+  if (!sta_enabled) {
+    if (host.length() > 0 && host != ap_ip_str && host != WiFi.localIP().toString() && host.indexOf("esp32.local") == -1) {
+      server.send(404, "text/plain", "Not Found");
+      return;
+    }
+    handleRoot();
+    return;
+  }
+
+  // 3. Khi đang bật Wi-Fi nguồn nhưng CHƯA có mạng (chờ cấu hình): chuyển hướng về Web Portal để mở Captive Portal
   if (host.length() > 0 && host != ap_ip_str && host != WiFi.localIP().toString() && host.indexOf("esp32.local") == -1) {
     server.sendHeader("Location", String("http://") + ap_ip_str + "/", true);
     server.send(302, "text/plain", "");
@@ -2911,7 +2930,7 @@ void setup() {
     esp_netif_ip_info_t ip_info;
     ip_info.ip.addr = (uint32_t)ap_ip;
     ip_info.netmask.addr = (uint32_t)subnet;
-    ip_info.gw.addr = (sta_enabled && WiFi.status() == WL_CONNECTED) ? (uint32_t)ap_ip : 0; // Khi có Wi-Fi nguồn: gán gw để DHCPS cấp Option 3; Khi tắt STA: gw=0 để điện thoại dùng 5G
+    ip_info.gw.addr = (uint32_t)ap_ip;
     esp_netif_dhcps_stop(ap_netif);
     esp_netif_set_ip_info(ap_netif, &ip_info);
   }

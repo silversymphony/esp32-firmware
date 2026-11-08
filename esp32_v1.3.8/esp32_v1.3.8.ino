@@ -503,24 +503,35 @@ void handleBleCommand(String cmd) {
     String newPass = (comma >= 0) ? payload.substring(comma + 1) : "";
     newSsid.trim(); newPass.trim();
 
-    if (newSsid.length() > 0) {
-      sta_ssid = newSsid;
-      sta_password = newPass;
-      sta_enabled = true;
-
+    if (newSsid.equalsIgnoreCase("CLEAR") || newSsid.length() == 0) {
+      sta_ssid = "";
+      sta_password = "";
+      sta_enabled = false;
       prefs.begin("gateway", false);
-      prefs.putString("sta_ssid", sta_ssid);
-      prefs.putString("sta_pass", sta_password);
-      prefs.putBool("sta_en", true);
+      prefs.remove("sta_ssid");
+      prefs.remove("sta_pass");
+      prefs.putBool("sta_en", false);
       prefs.end();
-
-      logPrintf("[STA] Da cap nhat Wi-Fi nguon: '%s'. Dang ket noi...", sta_ssid.c_str());
-      sendResponse("[OK] Da luu Wi-Fi! ESP32 dang ket noi vao: " + sta_ssid);
-
-      triggerStaConnect();
-    } else {
-      sendResponse("[ERROR] Cu phap sai! Hay gui: WIFI:TenWifi,MatKhau");
+      WiFi.disconnect(true);
+      esp_wifi_disconnect();
+      WiFi.mode(WIFI_AP);
+      esp_wifi_set_channel(current_effective_channel, WIFI_SECOND_CHAN_NONE);
+      sta_conn_state = STA_STATE_IDLE;
+      disableNapt();
+      stopCaptiveDns();
+      configureSoftApDhcp(false);
+      sendResponse("[OK] Da xoa trang Wi-Fi nguon! Mac dinh tro ve de trong.");
+      return;
     }
+
+    sta_ssid = newSsid;
+    sta_password = newPass;
+    sta_enabled = true;
+
+    logPrintf("[STA] BLE dat Wi-Fi nguon: '%s'. Dang thu ket noi (chi luu Flash NVS khi ket noi thanh cong)...", sta_ssid.c_str());
+    sendResponse("[OK] ESP32 dang thu ket noi vao: " + sta_ssid + ". Khi ket noi thanh cong se tu dong luu vao Flash!");
+
+    triggerStaConnect();
     return;
   }
 
@@ -1977,6 +1988,14 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
     sta_connected_state = true; // Chốt trạng thái đã kết nối thành công
     sta_conn_state = STA_STATE_CONNECTED;
 
+    // Khi có kết nối lần đầu thành công, LÚC NÀY MỚI LƯU vào Flash NVS
+    prefs.begin("gateway", false);
+    prefs.putString("sta_ssid", sta_ssid);
+    prefs.putString("sta_pass", sta_password);
+    prefs.putBool("sta_en", true);
+    prefs.end();
+    logPrintf("[STA] Ket noi thanh cong! Da luu Wi-Fi '%s' vao Flash NVS.", sta_ssid.c_str());
+
     // Đồng bộ thời gian hệ thống SNTP ngay khi có mạng để mbedTLS xác thực chứng chỉ TLS/SSL
     configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
 
@@ -2294,24 +2313,51 @@ void handleApiScan() {
   }
 }
 
-// API: Lưu cấu hình Wi-Fi nguồn (STA) và bắt đầu kết nối
+// API: Xóa hoàn toàn cấu hình Wi-Fi nguồn khỏi Flash NVS (Đưa về mặc định để trống)
+void handleApiForgetSta() {
+  sta_ssid = "";
+  sta_password = "";
+  sta_enabled = false;
+
+  prefs.begin("gateway", false);
+  prefs.remove("sta_ssid");
+  prefs.remove("sta_pass");
+  prefs.putBool("sta_en", false);
+  prefs.end();
+
+  WiFi.disconnect(true);
+  esp_wifi_disconnect();
+  WiFi.mode(WIFI_AP);
+  esp_wifi_set_channel(current_effective_channel, WIFI_SECOND_CHAN_NONE);
+  sta_conn_state = STA_STATE_IDLE;
+  disableNapt();
+  stopCaptiveDns();
+  configureSoftApDhcp(false);
+
+  logMessage("[STA] Da xoa trang Wi-Fi nguon khoi Flash NVS (Mac dinh de trong).");
+  server.send(200, "application/json", "{\"success\":true,\"msg\":\"Da xoa Wi-Fi nguon! Bo nho Flash tro ve trang thai de trong.\"}");
+}
+
+// API: Tiếp nhận cấu hình Wi-Fi nguồn (STA) và bắt đầu kết nối thử (chỉ lưu Flash khi kết nối thành công)
 void handleApiSaveSta() {
   if (server.hasArg("ssid")) {
     sta_ssid = server.arg("ssid");
     sta_password = server.arg("pass");
-    sta_enabled = true; // Tu dong bat lai Wi-Fi nguon khi nguoi dung luu mang moi
+    sta_ssid.trim();
+    sta_password.trim();
 
-    prefs.begin("gateway", false);
-    prefs.putString("sta_ssid", sta_ssid);
-    prefs.putString("sta_pass", sta_password);
-    prefs.putBool("sta_en", true);
-    prefs.end();
+    if (sta_ssid.length() == 0) {
+      handleApiForgetSta();
+      return;
+    }
 
-    logPrintf("[STA] Da luu Wi-Fi nguon moi: %s. Dang ket noi...", sta_ssid.c_str());
+    sta_enabled = true; // Bật cờ kết nối trong RAM
+
+    logPrintf("[STA] Nhan Wi-Fi: '%s'. Dang thu ket noi (chi luu vao Flash NVS khi ket noi thanh cong)...", sta_ssid.c_str());
 
     triggerStaConnect();
 
-    server.send(200, "application/json", "{\"success\":true,\"msg\":\"Da luu Wi-Fi nguon! ESP32 dang ket noi lai...\"}");
+    server.send(200, "application/json", "{\"success\":true,\"msg\":\"ESP32 dang thu ket noi vao Wi-Fi: " + sta_ssid + "! Thong tin se duoc luu khi ket noi thanh cong.\"}");
   } else {
     server.send(400, "application/json", "{\"error\":\"Thieu SSID\"}");
   }
@@ -2654,16 +2700,22 @@ void setup() {
   // Bước 1: Tải thông số từ bộ nhớ Flash NVS
   prefs.begin("gateway", false);
   String installed_ver = prefs.getString("fw_installed_ver", "");
-  if (installed_ver != FIRMWARE_VERSION) {
-    logPrintf("[UPGRADE] Phat hien phien ban moi: v%s (Ban cu: %s).", FIRMWARE_VERSION.c_str(), installed_ver.length() > 0 ? installed_ver.c_str() : "None");
-    // Giu nguyen thong tin Wi-Fi nguon (sta_ssid, sta_pass) de sau khi nang cap ESP32 tu dong ket noi lai
+  bool sta_clean = prefs.getBool("sta_clean_v138", false);
+
+  if (installed_ver != FIRMWARE_VERSION || !sta_clean) {
+    logPrintf("[UPGRADE] Khoi tao phien ban: v%s (Ban cu: %s).", FIRMWARE_VERSION.c_str(), installed_ver.length() > 0 ? installed_ver.c_str() : "None");
     prefs.putString("fw_installed_ver", FIRMWARE_VERSION);
-    logMessage("[UPGRADE] Nang cap thanh cong! Toan bo cau hinh Wi-Fi duoc bao toan.");
+    // Tu ban nay: mac dinh luon de trong Wi-Fi nguon, khong luu truoc. Khi co ket noi lan dau moi luu.
+    prefs.remove("sta_ssid");
+    prefs.remove("sta_pass");
+    prefs.putBool("sta_en", false);
+    prefs.putBool("sta_clean_v138", true);
+    logMessage("[INIT] Mac dinh Wi-Fi nguon: DE TRONG (Tat Wi-Fi nguon). Chi luu khi ket noi lan dau thanh cong!");
   }
 
   sta_enabled    = prefs.getBool("sta_en", false); // Mặc định lần đầu là FALSE (Tắt Wi-Fi nguồn)
-  sta_ssid       = prefs.getString("sta_ssid", "");
-  sta_password   = prefs.getString("sta_pass", "");
+  sta_ssid       = prefs.getString("sta_ssid", ""); // Mặc định luôn để trống
+  sta_password   = prefs.getString("sta_pass", ""); // Mặc định luôn để trống
   ap_ssid        = prefs.getString("ap_ssid", "ODE - wireless WiFi");
   ap_password    = prefs.getString("ap_pass", "Ode6868@");
   ap_channel     = prefs.getUChar("ap_ch", 6);
@@ -2775,6 +2827,7 @@ void setup() {
   server.on("/api/clear_logs", HTTP_POST, handleApiClearLogs);
   server.on("/api/scan", HTTP_GET, handleApiScan);
   server.on("/api/save_sta", HTTP_POST, handleApiSaveSta);
+  server.on("/api/forget_sta", HTTP_POST, handleApiForgetSta);
   server.on("/api/save_ap", HTTP_POST, handleApiSaveAp);
   server.on("/api/profiles", HTTP_GET, handleApiGetProfiles);
   server.on("/api/save_profile", HTTP_POST, handleApiSaveProfile);

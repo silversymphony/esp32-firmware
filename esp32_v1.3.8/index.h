@@ -298,8 +298,11 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             <button class="pass-toggle" type="button" onclick="togglePass('staPassInput', this)">👁️</button>
           </div>
         </div>
-        <div class="notice" id="noticeSta">💾 Cấu hình sẽ được lưu vĩnh viễn vào bộ nhớ Flash ESP32 (Preferences NVS).</div>
-        <button class="btn btn-primary" id="btnSaveSta" onclick="saveSta()">🚀 Lưu Cấu Hình & Kết Nối</button>
+        <div class="notice" id="noticeSta">💾 Mặc định luôn để trống. Cấu hình chỉ được lưu vào Flash khi kết nối thành công.</div>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-primary" id="btnSaveSta" style="flex: 1;" onclick="saveSta()">🚀 Kết Nối & Lưu</button>
+          <button class="btn" id="btnForgetSta" style="width: auto; padding: 0 14px; background: rgba(239, 68, 68, 0.2); border: 1px solid #ef4444; color: #f87171;" onclick="forgetSta()">🗑️ Xóa Wi-Fi</button>
+        </div>
       </div>
     </div>
   </div>
@@ -650,8 +653,9 @@ var I18N = {
     phStaSsid: "Nhập hoặc chọn Wi-Fi bên trên",
     lblInputStaPass: "Mật khẩu Wi-Fi Nguồn",
     phStaPass: "Nhập mật khẩu (để trống nếu mở)",
-    noticeSta: "💾 Cấu hình sẽ được lưu vĩnh viễn vào bộ nhớ Flash ESP32 (Preferences NVS).",
-    btnSaveSta: "🚀 Lưu Cấu Hình & Kết Nối",
+    noticeSta: "💾 Mặc định luôn để trống. Cấu hình chỉ được lưu vào Flash khi kết nối thành công.",
+    btnSaveSta: "🚀 Kết Nối & Lưu",
+    btnForgetSta: "🗑️ Xóa Wi-Fi",
     presetTitle: "Mẫu Cấu Hình Mạng Phát (Presets)",
     lblSelectPreset: "Chọn nhanh cấu hình đã lưu:",
     lblPresetName: "Tên mẫu cấu hình:",
@@ -738,8 +742,9 @@ var I18N = {
     phStaSsid: "Enter or select Wi-Fi above",
     lblInputStaPass: "Source Wi-Fi Password",
     phStaPass: "Enter password (leave empty if open)",
-    noticeSta: "💾 Configuration is permanently saved to ESP32 Flash memory (Preferences NVS).",
-    btnSaveSta: "🚀 Save Configuration & Connect",
+    noticeSta: "💾 Default is empty. Wi-Fi credentials are only saved to Flash upon successful connection.",
+    btnSaveSta: "🚀 Connect & Save",
+    btnForgetSta: "🗑️ Forget Wi-Fi",
     presetTitle: "SoftAP Configuration Presets",
     lblSelectPreset: "Quick select saved preset:",
     lblPresetName: "Preset Profile Name:",
@@ -1263,9 +1268,22 @@ function saveSta() {
   fetch('/api/save_sta', { method: 'POST', body: data })
     .then(function(res) { return res.json(); })
     .then(function(d) {
-      alert(d.msg || (currentLang === 'en' ? 'Source Wi-Fi saved! ESP32 reconnecting...' : 'Đã lưu Wi-Fi nguồn! ESP32 đang kết nối lại...'));
+      alert(d.msg || (currentLang === 'en' ? 'ESP32 is connecting... Credentials will be saved upon success.' : 'ESP32 đang thử kết nối! Khi kết nối thành công sẽ tự động lưu.'));
       showTab(1);
-      setTimeout(updateStatus, 3000);
+      setTimeout(updateStatus, 2000);
+    })
+    .catch(function(err) { alert(currentLang === 'en' ? 'Request error!' : 'Lỗi khi gửi yêu cầu!'); });
+}
+
+function forgetSta() {
+  if (!confirm(currentLang === 'en' ? 'Forget saved upstream Wi-Fi and return to empty?' : 'Xóa thông tin Wi-Fi nguồn đã lưu và đưa về trạng thái trống?')) return;
+  fetch('/api/forget_sta', { method: 'POST' })
+    .then(function(res) { return res.json(); })
+    .then(function(d) {
+      alert(d.msg || (currentLang === 'en' ? 'Source Wi-Fi cleared!' : 'Đã xóa Wi-Fi nguồn!'));
+      document.getElementById('staSsidInput').value = '';
+      document.getElementById('staPassInput').value = '';
+      updateStatus();
     })
     .catch(function(err) { alert(currentLang === 'en' ? 'Request error!' : 'Lỗi khi gửi yêu cầu!'); });
 }

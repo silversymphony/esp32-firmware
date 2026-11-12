@@ -266,29 +266,25 @@ void logPrintf(const char *format, ...) {
   logMessage(s);
 }
 
-// Tạm dừng kết nối STA để giải phóng radio 100% cho SoftAP
+// Dừng kết nối STA
 void stopStaConnecting() {
-  WiFi.disconnect(false);
+  WiFi.disconnect(true);
   esp_wifi_disconnect();
-  esp_wifi_set_channel(current_effective_channel, WIFI_SECOND_CHAN_NONE);
   sta_conn_state = STA_STATE_IDLE;
-  sta_next_retry_time = millis() + 30000; // Nghỉ 30s trước khi thử lại
-  logPrintf("[STA] Tam dung quet Wi-Fi nguon. Khoa kenh SoftAP: %d. Thu lai sau 30s.", current_effective_channel);
 }
 
-// Bắt đầu cửa sổ kết nối thử nghiệm vào Wi-Fi nguồn (tối đa 4s)
+// Bắt đầu kết nối vào Wi-Fi nguồn
 void triggerStaConnect() {
   if (!sta_enabled || sta_ssid.length() == 0) return;
   if (WiFi.status() == WL_CONNECTED) {
     sta_conn_state = STA_STATE_CONNECTED;
     return;
   }
-  logPrintf("[STA] Thu ket noi vao Wi-Fi nguon: '%s' (Cua so toi da 4s)...", sta_ssid.c_str());
+  logPrintf("[STA] Dang ket noi vao Wi-Fi nguon: '%s'...", sta_ssid.c_str());
   WiFi.mode(WIFI_AP_STA);
-  WiFi.setAutoReconnect(false);
+  WiFi.setAutoReconnect(true);
   WiFi.begin(sta_ssid.c_str(), (sta_password.length() > 0 ? sta_password.c_str() : NULL));
   sta_conn_state = STA_STATE_CONNECTING;
-  sta_connect_start_time = millis();
 }
 
 // Kiểm tra chuỗi có đúng 6 chữ số hợp lệ hay không
@@ -518,7 +514,6 @@ void handleBleCommand(String cmd) {
       WiFi.disconnect(true);
       esp_wifi_disconnect();
       WiFi.mode(WIFI_AP);
-      esp_wifi_set_channel(current_effective_channel, WIFI_SECOND_CHAN_NONE);
       sta_conn_state = STA_STATE_IDLE;
       disableNapt();
       stopCaptiveDns();
@@ -562,7 +557,6 @@ void handleBleCommand(String cmd) {
     WiFi.disconnect(true);
     esp_wifi_disconnect();
     WiFi.mode(WIFI_AP);
-    esp_wifi_set_channel(current_effective_channel, WIFI_SECOND_CHAN_NONE);
     sta_conn_state = STA_STATE_IDLE;
     disableNapt();
     stopCaptiveDns();
@@ -1887,11 +1881,14 @@ void configureSoftApDhcp(bool randomizePool) {
       // 1. Tạm dừng DHCPS để cài đặt thông số IP info và DHCP options
       esp_netif_dhcps_stop(ap_netif);
 
-      // 2. Luôn cấp Gateway IP (10.51.31.254) và Subnet Mask /24 cho SoftAP
+      // 2. Cấu hình IP và Subnet Mask /24:
+      // Khi có Internet STA: Gateway = gw_ip để DHCP cấp Option 3 cho client;
+      // Khi tắt STA (hoặc mất Internet): Gateway = 0.0.0.0 để điện thoại dùng 5G (Chuẩn v1.3.8)
+      bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
       esp_netif_ip_info_t ip_info;
       ip_info.ip.addr = (uint32_t)gw_ip;
       ip_info.netmask.addr = (uint32_t)sub_ip;
-      ip_info.gw.addr = (uint32_t)gw_ip; // Luôn là Gateway IP để client có default route
+      ip_info.gw.addr = has_uplink ? (uint32_t)gw_ip : 0;
       esp_netif_set_ip_info(ap_netif, &ip_info);
 
       // Dải cấp IP cố định theo cấu hình đã lưu, không đảo lộn ngẫu nhiên
@@ -1902,7 +1899,7 @@ void configureSoftApDhcp(bool randomizePool) {
       }
       // ESP-IDF giới hạn dải cấp IP tối đa là 100 địa chỉ (DHCPS_MAX_LEASE = 100)
       if (e_u32 - s_u32 + 1 > 100) {
-        e_u32 = s_u32 + 90; // Giới hạn 91 IP để đảm bảo không vượt quá 100
+        e_u32 = s_u32 + 90; // Giới hạn <= 100 địa chỉ để tránh lỗi ESP_ERR_ESP_NETIF_INVALID_PARAMS (20481)
       }
       IPAddress act_s = u32ToIp(s_u32);
       IPAddress act_e = u32ToIp(e_u32);
@@ -1930,10 +1927,10 @@ void configureSoftApDhcp(bool randomizePool) {
     }
 
     // 1. Cấu hình Option 3 (Router / Default Gateway):
-    // Luôn cấp Gateway để điện thoại nhận diện default route.
-    // Khi STA tắt, uplink probe không tới được Internet -> Android tự động kích hoạt Poor Network -> Dùng 5G
-    // Trong khi vẫn duy trì truy cập Gateway Manager http://10.51.31.254/ qua Wi-Fi.
-    dhcps_offer_t dhcps_router_value = OFFER_ROUTER;
+    // Chỉ cấp Gateway khi THỰC SỰ có kết nối Wi-Fi nguồn (has_uplink)
+    // Khi chưa có Internet STA hoặc khi tắt STA (chế độ 5G): TẮT Option 3 (OFFER_ROUTER = 0) -> Điện thoại dùng 5G không bị mất mạng! (Chuẩn v1.3.8)
+    bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
+    dhcps_offer_t dhcps_router_value = has_uplink ? OFFER_ROUTER : 0;
     esp_netif_dhcps_option(
       ap_netif,
       ESP_NETIF_OP_SET,
@@ -1943,7 +1940,9 @@ void configureSoftApDhcp(bool randomizePool) {
     );
 
     // 2. Cấu hình Option 6 (Domain Name Server - DNS):
-    dhcps_offer_t dhcps_dns_value = OFFER_DNS;
+    // Khi có Internet STA: Cấp DNS Server để client duyệt web trực tiếp qua NAPT
+    // Khi chưa có Internet STA: KHÔNG cấp DNS (dhcps_dns_value = 0) để điện thoại dùng DNS 5G (Chuẩn v1.3.8)
+    dhcps_offer_t dhcps_dns_value = has_uplink ? OFFER_DNS : 0;
     esp_netif_dhcps_option(
       ap_netif,
       ESP_NETIF_OP_SET,
@@ -1952,28 +1951,37 @@ void configureSoftApDhcp(bool randomizePool) {
       sizeof(dhcps_dns_value)
     );
 
-    esp_netif_dns_info_t dns_main, dns_backup;
-    dns_main.ip.type = ESP_IPADDR_TYPE_V4;
-    dns_backup.ip.type = ESP_IPADDR_TYPE_V4;
+    if (dhcps_dns_value == OFFER_DNS) {
+      esp_netif_dns_info_t dns_main, dns_backup;
+      dns_main.ip.type = ESP_IPADDR_TYPE_V4;
+      dns_backup.ip.type = ESP_IPADDR_TYPE_V4;
 
-    IPAddress upstreamDns = (sta_enabled && WiFi.status() == WL_CONNECTED) ? WiFi.dnsIP(0) : IPAddress(8, 8, 8, 8);
-    if (upstreamDns == IPAddress(0, 0, 0, 0)) {
-      upstreamDns = IPAddress(8, 8, 8, 8);
+      IPAddress upstreamDns = WiFi.dnsIP(0);
+      if (upstreamDns == IPAddress(0, 0, 0, 0)) {
+        upstreamDns = IPAddress(8, 8, 8, 8);
+      }
+      dns_main.ip.u_addr.ip4.addr = (uint32_t)upstreamDns;
+
+      IPAddress backupDns = WiFi.dnsIP(1);
+      if (backupDns == IPAddress(0, 0, 0, 0) || backupDns == upstreamDns) {
+        backupDns = IPAddress(1, 1, 1, 1);
+      }
+      dns_backup.ip.u_addr.ip4.addr = (uint32_t)backupDns;
+
+      esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_MAIN, &dns_main);
+      esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_BACKUP, &dns_backup);
     }
-    dns_main.ip.u_addr.ip4.addr = (uint32_t)upstreamDns;
-
-    IPAddress backupDns = (sta_enabled && WiFi.status() == WL_CONNECTED) ? WiFi.dnsIP(1) : IPAddress(1, 1, 1, 1);
-    if (backupDns == IPAddress(0, 0, 0, 0) || backupDns == upstreamDns) {
-      backupDns = IPAddress(1, 1, 1, 1);
-    }
-    dns_backup.ip.u_addr.ip4.addr = (uint32_t)backupDns;
-
-    esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_MAIN, &dns_main);
-    esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_BACKUP, &dns_backup);
 
     esp_err_t start_err = esp_netif_dhcps_start(ap_netif);
     logPrintf("[DHCP] Khoi chay Native ESP-IDF DHCP Server! (Ket qua: %d | Pool: %s -> %s | GW: %s)",
-              start_err, dhcp_start_str.c_str(), dhcp_end_str.c_str(), ap_ip_str.c_str());
+              start_err, dhcp_start_str.c_str(), dhcp_end_str.c_str(),
+              has_uplink ? ap_ip_str.c_str() : "0.0.0.0 (5G Mode)");
+
+    // Luon dam bao Default Netif la STA khi da ket noi Wi-Fi nguon
+    esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (sta_netif != NULL && has_uplink) {
+      esp_netif_set_default_netif(sta_netif);
+    }
   } else {
     logMessage("[DHCP-LOI] Khong tim thay netif WIFI_AP_DEF!");
   }
@@ -2061,8 +2069,7 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
     } else {
       stopCaptiveDns();
     }
-    // Khoa lai kenh SoftAP de bao ve song Wi-Fi AP khong bi loan kenh
-    esp_wifi_set_channel(current_effective_channel, WIFI_SECOND_CHAN_NONE);
+    configureSoftApDhcp(false);
   }
 }
 
@@ -2919,15 +2926,15 @@ void setup() {
 
   // Bước 9: Kết nối vào Wi-Fi nguồn (STA) nếu được bật
   if (sta_enabled && sta_ssid.length() > 0) {
-    logPrintf("[STA] Dang ket noi vao mang nguon: %s (Toi da 4s)...", sta_ssid.c_str());
-    WiFi.setAutoReconnect(false);
+    logPrintf("[STA] Dang ket noi vao mang nguon: %s...", sta_ssid.c_str());
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.setAutoReconnect(true);
     WiFi.begin(sta_ssid.c_str(), (sta_password.length() > 0 ? sta_password.c_str() : NULL));
     sta_conn_state = STA_STATE_CONNECTING;
-    sta_connect_start_time = millis();
 
     unsigned long start_time = millis();
-    while (WiFi.status() != WL_CONNECTED && (millis() - start_time < 4000)) {
-      delay(200);
+    while (WiFi.status() != WL_CONNECTED && (millis() - start_time < 6000)) {
+      delay(300);
       Serial.print(".");
     }
     Serial.println();
@@ -2941,9 +2948,9 @@ void setup() {
       stopCaptiveDns();
       configureSoftApDhcp(false);
     } else {
-      logPrintf("[STA] Khong the ket noi Wi-Fi nguon luc khoi dong. Dung quet, khoa kenh SoftAP (%d) va nghi 30s.", current_effective_channel);
-      stopStaConnecting();
+      logMessage("[STA] Chua ket noi duoc ngay luc khoi dong. ESP32 se tu dong ket noi lai trong nen.");
       startCaptiveDns();
+      configureSoftApDhcp(false);
     }
   } else {
     sta_conn_state = STA_STATE_IDLE;
@@ -2992,63 +2999,43 @@ void loop() {
     }
   }
 
-  // 6. Quản lý trạng thái kết nối Wi-Fi nguồn (Non-blocking Reconnect State Machine)
-  if (sta_enabled && sta_ssid.length() > 0) {
-    if (WiFi.status() == WL_CONNECTED) {
-      if (sta_conn_state != STA_STATE_CONNECTED) {
-        sta_conn_state = STA_STATE_CONNECTED;
-      }
-      if (!napt_enabled) {
-        logMessage("[LOOP] STA da ket noi! Bat NAPT va tat Captive Portal.");
-        enableNapt();
-        stopCaptiveDns();
-        configureSoftApDhcp(false);
+  // 6. Giám sát trạng thái kết nối STA định kỳ mỗi 3 giây (Chuẩn v1.3.8)
+  if (millis() - last_sta_check > 3000) {
+    last_sta_check = millis();
+
+    if (sta_enabled && sta_ssid.length() > 0) {
+      if (WiFi.status() == WL_CONNECTED) {
+        if (sta_conn_state != STA_STATE_CONNECTED) {
+          sta_conn_state = STA_STATE_CONNECTED;
+        }
+        if (!napt_enabled) {
+          logMessage("[LOOP] STA da ket noi lai! Bat NAPT va tat Captive Portal.");
+          configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
+          enableNapt();
+          stopCaptiveDns();
+          configureSoftApDhcp(false);
+        }
+      } else {
+        if (napt_enabled) {
+          logMessage("[LOOP] STA mat ket noi! Tat NAPT va bat Captive Portal.");
+          disableNapt();
+          if (sta_enabled) {
+            startCaptiveDns();
+          } else {
+            stopCaptiveDns();
+          }
+          configureSoftApDhcp(false);
+        }
       }
     } else {
-      if (napt_enabled) {
-        logMessage("[LOOP] STA mat ket noi! Tat NAPT va bat Captive Portal.");
-        disableNapt();
-        startCaptiveDns();
+      if (sta_conn_state != STA_STATE_IDLE) {
+        sta_conn_state = STA_STATE_IDLE;
       }
-
-      if (sta_conn_state == STA_STATE_CONNECTED) {
-        // Vừa bị rớt mạng -> Ngắt quét, khóa lại kênh SoftAP, chờ 15s trước khi thử lại
-        stopStaConnecting();
-        sta_next_retry_time = millis() + 15000;
-      } else if (sta_conn_state == STA_STATE_CONNECTING) {
-        // Đang trong cửa sổ kết nối thử nghiệm (cho tối đa 4 giây)
-        if (millis() - sta_connect_start_time > 4000) {
-          logMessage("[STA] Het thoi gian cho (4s) khong thay router. Dung quet de dam bao on dinh SoftAP.");
-          stopStaConnecting();
-        }
-      } else if (sta_conn_state == STA_STATE_IDLE) {
-        // Đang ở trạng thái nghỉ: Radio 100% dành cho SoftAP
-        if (millis() >= sta_next_retry_time) {
-          // Chỉ thử lại nếu không bận các tác vụ quan trọng:
-          // 1. Không có client nào vừa mới kết nối vào SoftAP trong 10 giây qua
-          // 2. Không có tiến trình quét Wi-Fi ngầm nào đang chạy
-          // 3. Không có tiến trình kiểm tra / nạp OTA nào đang chạy
-          bool client_busy = (millis() - last_ap_client_connected_time < 10000);
-          bool scan_busy = (WiFi.scanComplete() == WIFI_SCAN_RUNNING);
-          bool ota_busy = (ota_check_state != OTA_CHECK_IDLE || pending_ota);
-
-          if (!client_busy && !scan_busy && !ota_busy) {
-            triggerStaConnect();
-          } else {
-            sta_next_retry_time = millis() + 5000; // Hoãn thêm 5s nếu đang bận
-          }
-        }
+      if (napt_enabled) disableNapt();
+      if (dns_captive_running) {
+        dnsServer.stop();
+        dns_captive_running = false;
       }
-    }
-  } else {
-    // Wi-Fi nguồn tắt hoặc chưa lưu SSID
-    if (sta_conn_state != STA_STATE_IDLE) {
-      sta_conn_state = STA_STATE_IDLE;
-    }
-    if (napt_enabled) disableNapt();
-    if (dns_captive_running) {
-      dnsServer.stop();
-      dns_captive_running = false;
     }
   }
 
@@ -3061,7 +3048,6 @@ void loop() {
       WiFi.disconnect(true);
       esp_wifi_disconnect();
       WiFi.mode(WIFI_AP);
-      esp_wifi_set_channel(current_effective_channel, WIFI_SECOND_CHAN_NONE);
       sta_conn_state = STA_STATE_IDLE;
       disableNapt();
       stopCaptiveDns();

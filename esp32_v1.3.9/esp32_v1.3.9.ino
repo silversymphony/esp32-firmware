@@ -1882,16 +1882,14 @@ void configureSoftApDhcp(bool randomizePool) {
       esp_netif_dhcps_stop(ap_netif);
 
       // 2. Cấu hình IP và Subnet Mask /24:
-      // Khi có Internet STA: Gateway = gw_ip để DHCP cấp Option 3 cho client;
-      // Khi tắt STA (hoặc mất Internet): Gateway = 0.0.0.0 để điện thoại dùng 5G (Chuẩn v1.3.8)
-      bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
+      // Luôn gán Gateway của SoftAP interface là gw_ip (10.51.31.254) để thiết bị nhận IP hợp lệ và thực hiện kiểm tra mạng
       esp_netif_ip_info_t ip_info;
       ip_info.ip.addr = (uint32_t)gw_ip;
       ip_info.netmask.addr = (uint32_t)sub_ip;
-      ip_info.gw.addr = has_uplink ? (uint32_t)gw_ip : 0;
+      ip_info.gw.addr = (uint32_t)gw_ip;
       esp_netif_set_ip_info(ap_netif, &ip_info);
 
-      // Dải cấp IP cố định theo cấu hình đã lưu, không đảo lộn ngẫu nhiên
+      // Dải cấp IP cố định theo cấu hình đã lưu
       uint32_t s_u32 = ipToU32(s_ip);
       uint32_t e_u32 = ipToU32(e_ip);
       if (e_u32 < s_u32) {
@@ -1899,7 +1897,7 @@ void configureSoftApDhcp(bool randomizePool) {
       }
       // ESP-IDF giới hạn dải cấp IP tối đa là 100 địa chỉ (DHCPS_MAX_LEASE = 100)
       if (e_u32 - s_u32 + 1 > 100) {
-        e_u32 = s_u32 + 90; // Giới hạn <= 100 địa chỉ để tránh lỗi ESP_ERR_ESP_NETIF_INVALID_PARAMS (20481)
+        e_u32 = s_u32 + 99; // Giới hạn <= 100 địa chỉ để tránh lỗi ESP_ERR_ESP_NETIF_INVALID_PARAMS (20481)
       }
       IPAddress act_s = u32ToIp(s_u32);
       IPAddress act_e = u32ToIp(e_u32);
@@ -1927,10 +1925,9 @@ void configureSoftApDhcp(bool randomizePool) {
     }
 
     // 1. Cấu hình Option 3 (Router / Default Gateway):
-    // Chỉ cấp Gateway khi THỰC SỰ có kết nối Wi-Fi nguồn (has_uplink)
-    // Khi chưa có Internet STA hoặc khi tắt STA (chế độ 5G): TẮT Option 3 (OFFER_ROUTER = 0) -> Điện thoại dùng 5G không bị mất mạng! (Chuẩn v1.3.8)
-    bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
-    dhcps_offer_t dhcps_router_value = has_uplink ? OFFER_ROUTER : 0;
+    // Luôn cấp Gateway (10.51.31.254) để điện thoại nhận DHCP hoàn chỉnh.
+    // Khi tắt STA (không có Internet), điện thoại kiểm tra Gateway thấy không có kết nối ra ngoài sẽ tự động chuyển sang 5G (Poor network)!
+    dhcps_offer_t dhcps_router_value = OFFER_ROUTER;
     esp_netif_dhcps_option(
       ap_netif,
       ESP_NETIF_OP_SET,
@@ -1940,9 +1937,8 @@ void configureSoftApDhcp(bool randomizePool) {
     );
 
     // 2. Cấu hình Option 6 (Domain Name Server - DNS):
-    // Khi có Internet STA: Cấp DNS Server để client duyệt web trực tiếp qua NAPT
-    // Khi chưa có Internet STA: KHÔNG cấp DNS (dhcps_dns_value = 0) để điện thoại dùng DNS 5G (Chuẩn v1.3.8)
-    dhcps_offer_t dhcps_dns_value = has_uplink ? OFFER_DNS : 0;
+    // Luôn cấp DNS Server để thiết bị phân giải tên miền nhanh chóng
+    dhcps_offer_t dhcps_dns_value = OFFER_DNS;
     esp_netif_dhcps_option(
       ap_netif,
       ESP_NETIF_OP_SET,
@@ -1951,33 +1947,31 @@ void configureSoftApDhcp(bool randomizePool) {
       sizeof(dhcps_dns_value)
     );
 
-    if (dhcps_dns_value == OFFER_DNS) {
-      esp_netif_dns_info_t dns_main, dns_backup;
-      dns_main.ip.type = ESP_IPADDR_TYPE_V4;
-      dns_backup.ip.type = ESP_IPADDR_TYPE_V4;
+    esp_netif_dns_info_t dns_main, dns_backup;
+    dns_main.ip.type = ESP_IPADDR_TYPE_V4;
+    dns_backup.ip.type = ESP_IPADDR_TYPE_V4;
 
-      IPAddress upstreamDns = WiFi.dnsIP(0);
-      if (upstreamDns == IPAddress(0, 0, 0, 0)) {
-        upstreamDns = IPAddress(8, 8, 8, 8);
-      }
-      dns_main.ip.u_addr.ip4.addr = (uint32_t)upstreamDns;
-
-      IPAddress backupDns = WiFi.dnsIP(1);
-      if (backupDns == IPAddress(0, 0, 0, 0) || backupDns == upstreamDns) {
-        backupDns = IPAddress(1, 1, 1, 1);
-      }
-      dns_backup.ip.u_addr.ip4.addr = (uint32_t)backupDns;
-
-      esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_MAIN, &dns_main);
-      esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_BACKUP, &dns_backup);
+    IPAddress upstreamDns = WiFi.dnsIP(0);
+    if (upstreamDns == IPAddress(0, 0, 0, 0)) {
+      upstreamDns = IPAddress(8, 8, 8, 8); // Google Public DNS
     }
+    dns_main.ip.u_addr.ip4.addr = (uint32_t)upstreamDns;
+
+    IPAddress backupDns = WiFi.dnsIP(1);
+    if (backupDns == IPAddress(0, 0, 0, 0) || backupDns == upstreamDns) {
+      backupDns = IPAddress(1, 1, 1, 1); // Cloudflare Public DNS
+    }
+    dns_backup.ip.u_addr.ip4.addr = (uint32_t)backupDns;
+
+    esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_MAIN, &dns_main);
+    esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_BACKUP, &dns_backup);
 
     esp_err_t start_err = esp_netif_dhcps_start(ap_netif);
-    logPrintf("[DHCP] Khoi chay Native ESP-IDF DHCP Server! (Ket qua: %d | Pool: %s -> %s | GW: %s)",
-              start_err, dhcp_start_str.c_str(), dhcp_end_str.c_str(),
-              has_uplink ? ap_ip_str.c_str() : "0.0.0.0 (5G Mode)");
+    logPrintf("[DHCP] Khoi chay Native ESP-IDF DHCP Server! (Ket qua: %d | Pool: %s -> %s | Gateway: %s)",
+              start_err, dhcp_start_str.c_str(), dhcp_end_str.c_str(), ap_ip_str.c_str());
 
     // Luon dam bao Default Netif la STA khi da ket noi Wi-Fi nguon
+    bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
     esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (sta_netif != NULL && has_uplink) {
       esp_netif_set_default_netif(sta_netif);
@@ -2008,14 +2002,21 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
 
     last_ap_client_connected_time = millis(); // Ghi nhan thoi diem de hoan STA reconnect
   } else if (event == ARDUINO_EVENT_WIFI_AP_STAIPASSIGNED) {
-    IPAddress clientIp = IPAddress(info.wifi_ap_staipassigned.ip.addr);
-    uint8_t *mac = info.wifi_ap_staipassigned.mac;
-    char buf[120];
-    snprintf(buf, sizeof(buf), "[WIFI-AP] Da cap IP: %s cho thiet bi: %02X:%02X:%02X:%02X:%02X:%02X thanh cong!",
-             clientIp.toString().c_str(),
-             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    Serial.println(buf);
-    addLogToBuffer(String(buf));
+    static uint32_t last_assigned_ip = 0;
+    static unsigned long last_assigned_time = 0;
+    uint32_t raw_ip = info.wifi_ap_staipassigned.ip.addr;
+    if (raw_ip != last_assigned_ip || (millis() - last_assigned_time > 2000)) {
+      last_assigned_ip = raw_ip;
+      last_assigned_time = millis();
+      IPAddress clientIp = IPAddress(raw_ip);
+      uint8_t *mac = info.wifi_ap_staipassigned.mac;
+      char buf[120];
+      snprintf(buf, sizeof(buf), "[WIFI-AP] Da cap IP: %s cho thiet bi: %02X:%02X:%02X:%02X:%02X:%02X thanh cong!",
+               clientIp.toString().c_str(),
+               mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+      Serial.println(buf);
+      addLogToBuffer(String(buf));
+    }
   } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
     char buf[120];
     snprintf(buf, sizeof(buf), "[WIFI-STA] Da nhan IP: %s | Gateway: %s",
@@ -2069,7 +2070,7 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
     } else {
       stopCaptiveDns();
     }
-    configureSoftApDhcp(false);
+    // Khong goi configureSoftApDhcp() o day de tranh restart DHCP lam rot ket noi cac thiet bi dang vao Wi-Fi AP
   }
 }
 
@@ -2475,11 +2476,13 @@ void handleApiSaveAp() {
     if (server.hasArg("dhcp_start")) dhcp_start_str = server.arg("dhcp_start");
     if (server.hasArg("dhcp_end")) dhcp_end_str = server.arg("dhcp_end");
 
-    IPAddress testGw, testStart;
+    IPAddress testGw, testStart, testEnd;
     if (testGw.fromString(ap_ip_str)) {
       if (!testStart.fromString(dhcp_start_str) || testStart[0] != testGw[0] || testStart[1] != testGw[1] || testStart[2] != testGw[2]) {
         dhcp_start_str = String(testGw[0]) + "." + String(testGw[1]) + "." + String(testGw[2]) + ".10";
-        dhcp_end_str   = String(testGw[0]) + "." + String(testGw[1]) + "." + String(testGw[2]) + ".200";
+      }
+      if (!testEnd.fromString(dhcp_end_str) || testEnd[0] != testGw[0] || testEnd[1] != testGw[1] || testEnd[2] != testGw[2]) {
+        dhcp_end_str   = String(testGw[0]) + "." + String(testGw[1]) + "." + String(testGw[2]) + ".100";
       }
     }
 
@@ -2494,7 +2497,8 @@ void handleApiSaveAp() {
     prefs.putString("dhcp_end", dhcp_end_str);
     prefs.end();
 
-    logMessage("[AP] Da luu toan bo tham so mang phat vao NVS Flash!");
+    logPrintf("[AP] Da luu cau hinh mang phat: SSID='%s' | IP=%s | Pool=%s->%s vao Flash NVS!",
+              ap_ssid.c_str(), ap_ip_str.c_str(), dhcp_start_str.c_str(), dhcp_end_str.c_str());
 
     server.send(200, "application/json", "{\"success\":true,\"msg\":\"Da luu cau hinh mang phat! ESP32 se khoi dong lai sau 2 giay...\"}");
 
@@ -2961,7 +2965,6 @@ void setup() {
       logMessage("[MODE] Wi-Fi nguon dang TAT -> MANG NOI BO OFFLINE. Dien thoai dung 5G.");
       disableNapt();
       stopCaptiveDns();
-      configureSoftApDhcp(false);
     }
   }
 

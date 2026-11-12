@@ -127,10 +127,10 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
   <!-- Tabs Navigation (4 Tabs) -->
   <div class="tabs">
-    <button class="tab-btn active" id="btnTab1" onclick="showTab(1)">📊 Trạng thái</button>
-    <button class="tab-btn" id="btnTab2" onclick="showTab(2)">🌐 Nguồn</button>
-    <button class="tab-btn" id="btnTab3" onclick="showTab(3)">📡 Mạng Phát</button>
-    <button class="tab-btn" id="btnTab4" onclick="showTab(4)">📟 Log & OTA</button>
+    <button type="button" class="tab-btn active" id="btnTab1" onclick="showTab(1)">📊 Trạng thái</button>
+    <button type="button" class="tab-btn" id="btnTab2" onclick="showTab(2)">🌐 Nguồn</button>
+    <button type="button" class="tab-btn" id="btnTab3" onclick="showTab(3)">📡 Mạng Phát</button>
+    <button type="button" class="tab-btn" id="btnTab4" onclick="showTab(4)">📟 Log & OTA</button>
   </div>
 
   <!-- TAB 1: TRẠNG THÁI HỆ THỐNG -->
@@ -241,7 +241,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         <div style="width: 1px; background: var(--border);"></div>
         <div>
           <div class="info-label" id="lblFwVer">Firmware</div>
-          <div class="info-val" style="color: #fbbf24;" id="valFwVer">v1.3.9</div>
+          <div class="info-val" style="color: #fbbf24;" id="valFwVer">v1.4.0</div>
         </div>
         <div style="width: 1px; background: var(--border);"></div>
         <div>
@@ -280,7 +280,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     <div class="card">
       <div class="card-title">
         <span id="cardTitleScan">Quét Mạng Wi-Fi 2.4GHz</span>
-        <button class="btn-scan" id="scanBtn" onclick="scanWifi(true)">🔍 Quét mạng</button>
+        <button type="button" class="btn-scan" id="scanBtn" onclick="scanWifi(true)">🔍 Quét mạng</button>
       </div>
       <div class="wifi-list" id="wifiScanResults">
         <div id="scanPlaceholder" style="font-size: 11px; color: var(--text-muted); text-align: center; padding: 12px;">Bấm nút "Quét mạng" để tìm Wi-Fi xung quanh...</div>
@@ -300,8 +300,8 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         </div>
         <div class="notice" id="noticeSta">💾 Mặc định luôn để trống. Cấu hình chỉ được lưu vào Flash khi kết nối thành công.</div>
         <div style="display: flex; gap: 8px;">
-          <button class="btn btn-primary" id="btnSaveSta" style="flex: 1;" onclick="saveSta()">🚀 Kết Nối & Lưu</button>
-          <button class="btn" id="btnForgetSta" style="width: auto; padding: 0 14px; background: rgba(239, 68, 68, 0.2); border: 1px solid #ef4444; color: #f87171;" onclick="forgetSta()">🗑️ Xóa Wi-Fi</button>
+          <button type="button" class="btn btn-primary" id="btnSaveSta" style="flex: 1;" onclick="saveSta()">🚀 Kết Nối & Lưu</button>
+          <button type="button" class="btn" id="btnForgetSta" style="width: auto; padding: 0 14px; background: rgba(239, 68, 68, 0.2); border: 1px solid #ef4444; color: #f87171;" onclick="forgetSta()">🗑️ Xóa Wi-Fi</button>
         </div>
       </div>
     </div>
@@ -426,7 +426,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       </div>
 
       <div class="info-box" style="margin-bottom: 12px;">
-        <label id="lblInputDhcp" style="color: #cbd5e1; margin-bottom: 6px;">Dải Cấp IP Tự Động (DHCP Ngẫu Nhiên - Không Giới Hạn)</label>
+        <label id="lblInputDhcp" style="color: #cbd5e1; margin-bottom: 6px;">Dải Cấp IP Tự Động (DHCP Cố Định)</label>
         <div class="grid-2">
           <div>
             <span id="lblDhcpStart" style="font-size: 10px; color: var(--text-muted);">Bắt đầu:</span>
@@ -434,13 +434,13 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
           </div>
           <div>
             <span id="lblDhcpEnd" style="font-size: 10px; color: var(--text-muted);">Kết thúc:</span>
-            <input type="text" id="dhcpEndInput" placeholder="10.51.31.200">
+            <input type="text" id="dhcpEndInput" placeholder="10.51.31.100">
           </div>
         </div>
       </div>
 
-      <div id="noticeDhcp" class="notice" style="color: #fde68a;">🎲 Hệ thống tự động bốc ngẫu nhiên 1 IP trong dải này cho thiết bị mỗi lần kết nối!</div>
-      <button class="btn btn-success" id="btnSaveAp" onclick="saveAp()">💾 Lưu Tham Số & Khởi Động Lại AP</button>
+      <div id="noticeDhcp" class="notice" style="color: #fde68a;">🔒 Cấu hình dải IP cấp phát cho các thiết bị kết nối vào mạng Wi-Fi phát.</div>
+      <button type="button" class="btn btn-success" id="btnSaveAp" onclick="saveAp()">💾 Lưu Tham Số & Khởi Động Lại AP</button>
     </div>
   </div>
 
@@ -454,18 +454,18 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
           <span>🚀</span>
           <span id="cardTitleOta" style="color: #a5b4fc;">Nâng Cấp Firmware Không Dây (GitHub OTA)</span>
         </span>
-        <span id="badgeFwVerOta" class="badge" style="background: rgba(99, 102, 241, 0.2); color: #c7d2fe; border: 1px solid rgba(99, 102, 241, 0.4);">v1.3.9</span>
+        <span id="badgeFwVerOta" class="badge" style="background: rgba(99, 102, 241, 0.2); color: #c7d2fe; border: 1px solid rgba(99, 102, 241, 0.4);">v1.4.0</span>
       </div>
 
       <div class="form-group">
         <label id="lblOtaUrl">Đường dẫn GitHub Version (version.json)</label>
         <div style="display: flex; gap: 8px;">
           <input type="text" id="inputOtaUrl" value="https://raw.githubusercontent.com/silversymphony/esp32-firmware/main/version.json" style="font-size: 11px;">
-          <button class="btn btn-primary" id="btnSaveOtaUrl" style="width: auto; padding: 0 14px; font-size: 11px;" onclick="saveOtaUrl()">Lưu URL</button>
+          <button type="button" class="btn btn-primary" id="btnSaveOtaUrl" style="width: auto; padding: 0 14px; font-size: 11px;" onclick="saveOtaUrl()">Lưu URL</button>
         </div>
       </div>
 
-      <button id="btnCheckOta" class="btn" style="background: linear-gradient(135deg, #4f46e5, #2563eb); color: #fff; margin-bottom: 8px;" onclick="checkGithubOta()">
+      <button type="button" id="btnCheckOta" class="btn" style="background: linear-gradient(135deg, #4f46e5, #2563eb); color: #fff; margin-bottom: 8px;" onclick="checkGithubOta()">
         <span id="checkOtaIcon">🔍</span>
         <span id="checkOtaText">Kiểm Tra Bản Cập Nhật Mới</span>
       </button>
@@ -493,7 +493,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
           </div>
         </div>
 
-        <button id="btnRunOta" class="btn btn-success" onclick="startGithubOta()">
+        <button type="button" id="btnRunOta" class="btn btn-success" onclick="startGithubOta()">
           <span>🚀</span>
           <span id="btnRunOtaText">Bắt Đầu Tải & Ghi Flash Ngay</span>
         </button>
@@ -531,7 +531,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             <input type="password" id="inputBlePin" maxlength="6" placeholder="VD: 123456" style="font-weight: 700; letter-spacing: 2px; text-align: center; color: #fbbf24;">
             <button class="pass-toggle" type="button" onclick="togglePass('inputBlePin', this)">👁️</button>
           </div>
-          <button class="btn btn-primary" id="btnSavePin" style="width: auto; padding: 0 16px; font-size: 11px;" onclick="saveBlePin()">💾 Lưu PIN</button>
+          <button type="button" class="btn btn-primary" id="btnSavePin" style="width: auto; padding: 0 16px; font-size: 11px;" onclick="saveBlePin()">💾 Lưu PIN</button>
         </div>
         <div id="hintBlePin" style="font-size: 10px; color: #9ca3af; margin-top: 4px;">Dùng mã PIN này khi điện thoại yêu cầu ghép đôi Bluetooth.</div>
       </div>
@@ -548,7 +548,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     <div class="card">
       <div class="card-title">
         <span id="cardTitleTerm">📟 Nhật Ký Hoạt Động (Wireless Console Log)</span>
-        <button class="btn-scan" id="btnClearLogs" onclick="clearLogs()">Xóa log</button>
+        <button type="button" class="btn-scan" id="btnClearLogs" onclick="clearLogs()">Xóa log</button>
       </div>
       <div class="terminal" id="termLogs">
         <div>[DANG TAI NHAT KY HE THONG...]</div>
@@ -568,7 +568,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
   <div class="footer">
     <div id="footerDesc">ESP32 NAPT Repeater Gateway • Built with Custom Random DHCP, BLE Security & GitHub OTA</div>
     <div style="margin-top: 5px; color: #9ca3af; font-size: 11px;">
-      <span id="footerFwLabel">Firmware:</span> <span id="footerFwVer" style="color: #fbbf24; font-weight: 700;">v1.3.9</span>
+      <span id="footerFwLabel">Firmware:</span> <span id="footerFwVer" style="color: #fbbf24; font-weight: 700;">v1.4.0</span>
     </div>
   </div>
 </div>
@@ -577,6 +577,8 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 var currentTab = 1;
 var lastStatusData = null;
 var pollingPaused = false;
+var staInputsInitialized = false;
+var apInputsInitialized = false;
 
 // Quản lý bộ nhớ lưu trữ ngôn ngữ an toàn (chống lỗi Safari & Captive Portal)
 function getStoredLang() {
@@ -675,10 +677,10 @@ var I18N = {
     lblInputApBssid: "Địa Chỉ BSSID (MAC)",
     lblInputApIp: "IP Gateway (Cổng ESP32)",
     lblInputApSubnet: "Subnet Mask",
-    lblInputDhcp: "Dải Cấp IP Tự Động (DHCP Ngẫu Nhiên - Không Giới Hạn)",
+    lblInputDhcp: "Dải Cấp IP Tự Động (DHCP Cố Định)",
     lblDhcpStart: "Bắt đầu:",
     lblDhcpEnd: "Kết thúc:",
-    noticeDhcp: "🎲 Hệ thống tự động bốc ngẫu nhiên 1 IP trong dải này cho thiết bị mỗi lần kết nối!",
+    noticeDhcp: "🔒 Cấu hình dải IP cấp phát cho các thiết bị kết nối vào mạng Wi-Fi phát.",
     btnSaveAp: "💾 Lưu Tham Số & Khởi Động Lại AP",
     btnRebootText: "Khởi Động Lại ESP32",
     cardTitleOta: "Nâng Cấp Firmware Không Dây (GitHub OTA)",
@@ -764,10 +766,10 @@ var I18N = {
     lblInputApBssid: "BSSID Address (MAC)",
     lblInputApIp: "Gateway IP (ESP32)",
     lblInputApSubnet: "Subnet Mask",
-    lblInputDhcp: "DHCP IP Pool (Randomized Allocation - Unlimited)",
+    lblInputDhcp: "DHCP IP Pool (Static Range)",
     lblDhcpStart: "Start:",
     lblDhcpEnd: "End:",
-    noticeDhcp: "🎲 Randomly allocates an IP within this range on each client connection!",
+    noticeDhcp: "🔒 Configured IP address range allocated to clients connected to SoftAP.",
     btnSaveAp: "💾 Save Parameters & Restart AP",
     btnRebootText: "Reboot ESP32",
     cardTitleOta: "Over-the-Air Firmware Upgrade (GitHub OTA)",
@@ -957,8 +959,8 @@ function renderStatus(d) {
   document.getElementById('valApSubnet').innerText = d.ap_subnet || '255.255.255.0';
   
   var dStart = d.dhcp_start || '10.51.31.10';
-  var dEnd = d.dhcp_end || '10.51.31.200';
-  document.getElementById('valDhcpPool').innerText = dStart + '  ➔  ' + dEnd + (currentLang === 'en' ? ' (Random)' : ' (Ngẫu nhiên)');
+  var dEnd = d.dhcp_end || '10.51.31.100';
+  document.getElementById('valDhcpPool').innerText = dStart + '  ➔  ' + dEnd + (currentLang === 'en' ? ' (Static)' : ' (Cố định)');
 
   // Cập nhật trạng thái Max TX Power Boost
   var pBadge = document.getElementById('valPowerBadge');
@@ -1024,16 +1026,23 @@ function renderStatus(d) {
     document.getElementById('inputOtaUrl').value = d.ota_url;
   }
 
-  if (!document.getElementById('staSsidInput').value) document.getElementById('staSsidInput').value = d.sta_ssid || '';
-  if (!document.getElementById('staPassInput').value && d.sta_pass) document.getElementById('staPassInput').value = d.sta_pass;
-  if (!document.getElementById('apSsidInput').value) document.getElementById('apSsidInput').value = d.ap_ssid || '';
-  if (!document.getElementById('apPassInput').value && d.ap_pass) document.getElementById('apPassInput').value = d.ap_pass;
-  if (!document.getElementById('apBssidInput').value) document.getElementById('apBssidInput').value = d.ap_bssid || '';
-  if (!document.getElementById('apIpInput').value) document.getElementById('apIpInput').value = d.ap_ip || '';
-  if (!document.getElementById('apSubnetInput').value) document.getElementById('apSubnetInput').value = d.ap_subnet || '255.255.255.0';
-  if (!document.getElementById('dhcpStartInput').value) document.getElementById('dhcpStartInput').value = d.dhcp_start || '10.51.31.10';
-  if (!document.getElementById('dhcpEndInput').value) document.getElementById('dhcpEndInput').value = d.dhcp_end || '10.51.31.200';
-  if (d.ap_channel !== undefined) document.getElementById('apChannelSelect').value = d.ap_channel;
+  if (!staInputsInitialized) {
+    document.getElementById('staSsidInput').value = d.sta_ssid || '';
+    if (d.sta_pass) document.getElementById('staPassInput').value = d.sta_pass;
+    staInputsInitialized = true;
+  }
+
+  if (!apInputsInitialized) {
+    document.getElementById('apSsidInput').value = d.ap_ssid || '';
+    if (d.ap_pass) document.getElementById('apPassInput').value = d.ap_pass;
+    document.getElementById('apBssidInput').value = d.ap_bssid || '';
+    document.getElementById('apIpInput').value = d.ap_ip || '';
+    document.getElementById('apSubnetInput').value = d.ap_subnet || '255.255.255.0';
+    document.getElementById('dhcpStartInput').value = d.dhcp_start || '10.51.31.10';
+    document.getElementById('dhcpEndInput').value = d.dhcp_end || '10.51.31.100';
+    if (d.ap_channel !== undefined) document.getElementById('apChannelSelect').value = d.ap_channel;
+    apInputsInitialized = true;
+  }
 }
 
 function updateStatus() {
@@ -1299,19 +1308,24 @@ function forgetSta() {
 }
 
 function saveAp() {
-  var ssid = document.getElementById('apSsidInput').value;
+  var ssid = document.getElementById('apSsidInput').value.trim();
   var pass = document.getElementById('apPassInput').value;
   var ch = document.getElementById('apChannelSelect').value;
-  var bssid = document.getElementById('apBssidInput').value;
-  var ip = document.getElementById('apIpInput').value;
-  var subnet = document.getElementById('apSubnetInput').value;
-  var start = document.getElementById('dhcpStartInput').value;
-  var end = document.getElementById('dhcpEndInput').value;
+  var bssid = document.getElementById('apBssidInput').value.trim();
+  var ip = document.getElementById('apIpInput').value.trim();
+  var subnet = document.getElementById('apSubnetInput').value.trim();
+  var start = document.getElementById('dhcpStartInput').value.trim();
+  var end = document.getElementById('dhcpEndInput').value.trim();
 
   if (!ssid || !ip || !subnet) {
     alert(currentLang === 'en' ? 'Please fill in all required fields!' : 'Vui lòng điền đầy đủ các trường bắt buộc!');
     return;
   }
+
+  var msg = currentLang === 'en'
+    ? 'Are you sure you want to save AP parameters and restart ESP32?'
+    : 'Bạn có chắc chắn muốn lưu cấu hình phát Wi-Fi & khởi động lại ESP32 không?';
+  if (!confirm(msg)) return;
 
   var data = new URLSearchParams();
   data.append('ssid', ssid);
@@ -1326,7 +1340,8 @@ function saveAp() {
   fetch('/api/save_ap', { method: 'POST', body: data })
     .then(function(res) { return res.json(); })
     .then(function(d) {
-      alert(d.msg || (currentLang === 'en' ? 'SoftAP parameters saved! ESP32 restarting...' : 'Đã lưu cấu hình mạng phát! ESP32 đang khởi động lại...'));
+      showToast(d.msg || (currentLang === 'en' ? 'SoftAP parameters saved! ESP32 restarting...' : 'Đã lưu cấu hình mạng phát! ESP32 đang khởi động lại...'));
+      showRebootOverlay();
     })
     .catch(function(err) { alert(currentLang === 'en' ? 'Error saving SoftAP parameters!' : 'Lỗi khi lưu tham số AP!'); });
 }
@@ -1810,6 +1825,14 @@ function autoSelectChannel() {
       console.log(err);
     });
 }
+
+// Chống ấn phím Enter trên ô nhập liệu gây tự động gửi form / kích hoạt nhầm nút
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && e.target && e.target.tagName === 'INPUT' && e.target.type !== 'submit') {
+    e.preventDefault();
+    e.target.blur();
+  }
+});
 
 // Khởi chạy ngôn ngữ và nạp trạng thái ban đầu
 setLanguage(currentLang);

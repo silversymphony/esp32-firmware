@@ -1895,11 +1895,23 @@ void configureSoftApDhcp(bool randomizePool) {
       esp_netif_set_ip_info(ap_netif, &ip_info);
 
       // Dải cấp IP cố định theo cấu hình đã lưu, không đảo lộn ngẫu nhiên
+      uint32_t s_u32 = ipToU32(s_ip);
+      uint32_t e_u32 = ipToU32(e_ip);
+      if (e_u32 < s_u32) {
+        uint32_t tmp = s_u32; s_u32 = e_u32; e_u32 = tmp;
+      }
+      // ESP-IDF giới hạn dải cấp IP tối đa là 100 địa chỉ (DHCPS_MAX_LEASE = 100)
+      if (e_u32 - s_u32 + 1 > 100) {
+        e_u32 = s_u32 + 90; // Giới hạn 91 IP để đảm bảo không vượt quá 100
+      }
+      IPAddress act_s = u32ToIp(s_u32);
+      IPAddress act_e = u32ToIp(e_u32);
+
       dhcps_lease_t lease;
       memset(&lease, 0, sizeof(lease));
       lease.enable = true;
-      lease.start_ip.addr = (uint32_t)s_ip;
-      lease.end_ip.addr   = (uint32_t)e_ip;
+      lease.start_ip.addr = (uint32_t)act_s;
+      lease.end_ip.addr   = (uint32_t)act_e;
 
       esp_err_t opt_err = esp_netif_dhcps_option(
         ap_netif,
@@ -1910,6 +1922,8 @@ void configureSoftApDhcp(bool randomizePool) {
       );
       if (opt_err != ESP_OK) {
         logPrintf("[DHCP] Set dai IP that bai: %d", opt_err);
+      } else {
+        logPrintf("[DHCP] Set thanh cong dai IP: %s -> %s", act_s.toString().c_str(), act_e.toString().c_str());
       }
     } else {
       esp_netif_dhcps_stop(ap_netif);

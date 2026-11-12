@@ -60,10 +60,9 @@ extern "C" {
 #include <Update.h>
 #include <ESPmDNS.h>
 
-// Nhúng thư viện nâng cấp Firmware không dây qua GitHub HTTPS (Native ESP-IDF OTA siêu nhẹ)
-#include <esp_http_client.h>
-#include <esp_crt_bundle.h>
-#include <esp_https_ota.h>
+// Nhúng thư viện nâng cấp Firmware không dây qua GitHub HTTPS (NetworkClientSecure siêu nhẹ, bypass TLS RSA heap)
+#include <NetworkClientSecure.h>
+#include <HTTPClient.h>
 #include <time.h>
 #include <sys/time.h>
 
@@ -567,7 +566,7 @@ void handleBleCommand(String cmd) {
     sta_conn_state = STA_STATE_IDLE;
     disableNapt();
     stopCaptiveDns();
-    configureSoftApDhcp(true);
+    configureSoftApDhcp(false);
     delay(50);
     esp_wifi_deauth_sta(0);
     sendResponse("[OK] Da TAT Wi-Fi nguon! ESP32 chuyen sang che do MANG NOI BO OFFLINE. Dien thoai ket noi vao se giu nguyen 5G de truy cap Internet.");
@@ -1455,68 +1454,38 @@ String getGithubRawUrl(const String &url) {
   return url;
 }
 
-// Callback thu thập dữ liệu JSON từ esp_http_client
-static esp_err_t _ota_http_event_handler(esp_http_client_event_t *evt) {
-  if (evt->event_id == HTTP_EVENT_ON_DATA) {
-    String *out = (String *)evt->user_data;
-    if (out && evt->data && evt->data_len > 0) {
-      char tmp[evt->data_len + 1];
-      memcpy(tmp, evt->data, evt->data_len);
-      tmp[evt->data_len] = '\0';
-      *out += tmp;
-    }
-  }
-  return ESP_OK;
-}
-
-// Helper thực hiện tải JSON qua HTTPS bằng Native ESP-IDF esp_http_client (Bộ đệm chỉ 1KB thay vì 32KB mbedTLS)
+// Helper thực hiện tải JSON qua HTTPS bằng NetworkClientSecure + HTTPClient (siêu nhẹ, không tốn RAM RSA)
 bool fetchOtaJson(const String &targetUrl, String &payloadOut, String &errOut) {
-  // Giải phóng triệt để bộ nhớ scan Wi-Fi trước khi bắt đầu TLS handshake
   WiFi.scanDelete();
   cached_scan_json = "[]";
-
   logPrintf("[OTA] Kiem tra: %s (Free: %u | Max: %u)", targetUrl.c_str(), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
-  String responseBody = "";
-  esp_http_client_config_t config = {};
-  config.url = targetUrl.c_str();
-  config.crt_bundle_attach = NULL; // Bỏ qua cert bundle để dùng MBEDTLS_SSL_VERIFY_NONE (không tốn RAM RSA và không bao giờ lỗi 0x4290)
-  config.event_handler = _ota_http_event_handler;
-  config.user_data = &responseBody;
-  config.buffer_size = 1024;
-  config.buffer_size_tx = 512;
-  config.timeout_ms = 15000;
-  config.skip_cert_common_name_check = true;
-  config.addr_type = HTTP_ADDR_TYPE_INET;
-  config.max_redirection_count = 5;
+  NetworkClientSecure client;
+  client.setInsecure();
+  client.setTimeout(15000);
 
-  esp_http_client_handle_t client = esp_http_client_init(&config);
-  if (!client) {
-    errOut = "Khong the khoi tao esp_http_client";
+  HTTPClient http;
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  if (!http.begin(client, targetUrl)) {
+    errOut = "Khong the khoi tao HTTPClient";
     logPrintf("[OTA-LOI] %s", errOut.c_str());
     return false;
   }
 
-  esp_err_t err = esp_http_client_perform(client);
-  if (err == ESP_OK) {
-    int statusCode = esp_http_client_get_status_code(client);
-    if (statusCode == 200) {
-      payloadOut = responseBody;
-      esp_http_client_close(client);
-      esp_http_client_cleanup(client);
-      return true;
-    } else {
-      errOut = "May chu tra ve HTTP: " + String(statusCode);
-      logPrintf("[OTA-LOI] Ket noi %s that bai: %s", targetUrl.c_str(), errOut.c_str());
-      esp_http_client_close(client);
-      esp_http_client_cleanup(client);
-      return false;
-    }
+  int httpCode = http.GET();
+  if (httpCode == HTTP_CODE_OK) {
+    payloadOut = http.getString();
+    http.end();
+    logPrintf("[OTA] Tai JSON thanh cong! (%d bytes)", payloadOut.length());
+    return true;
   } else {
-    errOut = "Loi ket noi: " + String(esp_err_to_name(err));
+    if (httpCode > 0) {
+      errOut = "May chu tra ve HTTP: " + String(httpCode);
+    } else {
+      errOut = "Loi ket noi: " + http.errorToString(httpCode);
+    }
     logPrintf("[OTA-LOI] Ket noi %s that bai: %s", targetUrl.c_str(), errOut.c_str());
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
+    http.end();
     return false;
   }
 }
@@ -1612,27 +1581,24 @@ bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &e
   return true;
 }
 
-// Helper thực hiện tải firmware và ghi Flash qua Streaming esp_http_client + Update (tối ưu bộ nhớ, chống nghẽn BLE)
+// Helper thực hiện tải firmware và ghi Flash qua Streaming NetworkClientSecure + Update
 bool executeOtaDownload(const String &dlUrl) {
   logPrintf("[OTA] Bat dau tai firmware tu: %s", dlUrl.c_str());
   logPrintf("[OTA-MEM] Free Heap: %u bytes | Max Block: %u bytes", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
-  // Thu hồi RAM scan Wi-Fi và tạm dừng DNS captive để giải phóng tối đa bộ nhớ liên tục cho SSL
   WiFi.scanDelete();
   cached_scan_json = "[]";
   if (dns_captive_running) {
     dnsServer.stop();
     dns_captive_running = false;
   }
-  delay(200);
+  delay(100);
 
-  // Đảm bảo default netif là sta_netif trước khi kết nối HTTPS ra ngoài
   esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
   if (sta_netif != NULL) {
     esp_netif_set_default_netif(sta_netif);
   }
 
-  // Cấu hình DNS ưu tiên DNS router trước, sau đó là Google 8.8.8.8 và Cloudflare 1.1.1.1
   IPAddress rDns = WiFi.dnsIP(0);
   ip_addr_t d0, d1, d2;
   if (rDns != IPAddress(0, 0, 0, 0)) {
@@ -1649,135 +1615,92 @@ bool executeOtaDownload(const String &dlUrl) {
     dns_setserver(1, &d2);
   }
 
-  // Khởi tạo mốc thời gian hệ thống tối thiểu
-  if (time(nullptr) < 1794186000) {
-    struct timeval tv = { .tv_sec = 1794186000, .tv_usec = 0 }; // 2026-11-09
-    settimeofday(&tv, NULL);
-  }
+  NetworkClientSecure client;
+  client.setInsecure();
+  client.setTimeout(30000);
 
-  String currentUrl = dlUrl;
-  esp_http_client_handle_t client = nullptr;
-  int status_code = 0;
-  int content_length = 0;
-  int redirect_count = 0;
-
-  while (redirect_count < 3) {
-    esp_http_client_config_t config = {};
-    config.url = currentUrl.c_str();
-    config.crt_bundle_attach = NULL; // MBEDTLS_SSL_VERIFY_NONE (không tốn RAM RSA và không bao giờ nghẽn bộ nhớ)
-    config.buffer_size = 2048;
-    config.buffer_size_tx = 1024;
-    config.timeout_ms = 30000;
-    config.skip_cert_common_name_check = true;
-    config.addr_type = HTTP_ADDR_TYPE_INET;
-
-    client = esp_http_client_init(&config);
-    if (!client) {
-      logMessage("[OTA-LOI] Khong the khoi tao esp_http_client!");
-      return false;
-    }
-
-    esp_err_t err = esp_http_client_open(client, 0);
-    if (err != ESP_OK) {
-      logPrintf("[OTA-LOI] Khong the ket noi den may chu (Ma loi: %s)", esp_err_to_name(err));
-      esp_http_client_close(client);
-      esp_http_client_cleanup(client);
-      client = nullptr;
-      return false;
-    }
-
-    content_length = esp_http_client_fetch_headers(client);
-    status_code = esp_http_client_get_status_code(client);
-
-    if (status_code == 301 || status_code == 302 || status_code == 307) {
-      char *loc = nullptr;
-      if (esp_http_client_get_header(client, "Location", &loc) == ESP_OK && loc != nullptr && strlen(loc) > 0) {
-        logPrintf("[OTA] Chuyen huong HTTP %d -> %s", status_code, loc);
-        currentUrl = String(loc);
-        redirect_count++;
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        client = nullptr;
-        continue;
-      }
-    }
-    break;
-  }
-
-  if (status_code != 200 && status_code != 206) {
-    logPrintf("[OTA-LOI] May chu tra ve ma loi HTTP: %d", status_code);
-    if (client) {
-      esp_http_client_close(client);
-      esp_http_client_cleanup(client);
-    }
+  HTTPClient http;
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  if (!http.begin(client, dlUrl)) {
+    logMessage("[OTA-LOI] Khong the khoi tao ket noi tai firmware!");
     return false;
   }
 
-  size_t update_size = (content_length > 0) ? (size_t)content_length : UPDATE_SIZE_UNKNOWN;
-  if (content_length > 0) {
-    logPrintf("[OTA] Kich thuoc Firmware: %d bytes (%.2f MB)", content_length, (float)content_length / (1024.0 * 1024.0));
-  } else {
-    logMessage("[OTA] Kich thuoc Firmware: Dang chunked stream (khong co Content-Length)");
-  }
-
-  if (!Update.begin(update_size)) {
-    logPrintf("[OTA-LOI] Khong the khoi dong Update Flash (Ma loi: %d)", Update.getError());
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
+  int httpCode = http.GET();
+  if (httpCode != HTTP_CODE_OK) {
+    logPrintf("[OTA-LOI] May chu tra ve HTTP: %d", httpCode);
+    http.end();
     return false;
   }
 
+  int contentLength = http.getSize();
+  if (contentLength <= 0) {
+    logPrintf("[OTA-LOI] Do dai firmware khong hop le: %d", contentLength);
+    http.end();
+    return false;
+  }
+
+  logPrintf("[OTA] Kich thuoc Firmware: %d bytes (%.2f MB)", contentLength, (float)contentLength / (1024.0 * 1024.0));
+
+  if (!Update.begin(contentLength)) {
+    logPrintf("[OTA-LOI] Khong du bo nho Flash de OTA (Loi: %d)", Update.getError());
+    http.end();
+    return false;
+  }
+
+  NetworkClient *stream = http.getStreamPtr();
   uint8_t ota_buf[1024];
-  int read_bytes = 0;
   size_t total_written = 0;
   int prev_percent = -1;
+  unsigned long last_progress_time = millis();
   unsigned long last_yield = millis();
 
-  while ((read_bytes = esp_http_client_read(client, (char *)ota_buf, sizeof(ota_buf))) > 0) {
-    size_t written = Update.write(ota_buf, read_bytes);
-    if (written != (size_t)read_bytes) {
-      logPrintf("[OTA-LOI] Ghi Flash that bai! (Da ghi: %u / %d)", total_written, content_length);
-      Update.abort();
-      break;
-    }
-    total_written += written;
+  while (http.connected() && (total_written < (size_t)contentLength)) {
+    size_t sizeAvailable = stream->available();
+    if (sizeAvailable) {
+      int c = stream->readBytes(ota_buf, ((sizeAvailable > sizeof(ota_buf)) ? sizeof(ota_buf) : sizeAvailable));
+      if (c > 0) {
+        size_t written = Update.write(ota_buf, c);
+        if (written != (size_t)c) {
+          logPrintf("[OTA-LOI] Ghi Flash that bai! (Da ghi: %u / %d)", total_written, contentLength);
+          Update.abort();
+          break;
+        }
+        total_written += written;
+        last_progress_time = millis();
 
-    if (content_length > 0) {
-      int percent = (int)((total_written * 100) / content_length);
-      if (percent != prev_percent && (percent % 10 == 0 || percent == 100)) {
-        prev_percent = percent;
-        logPrintf("[OTA] Ghi Flash: %d%% (%u / %d bytes)", percent, total_written, content_length);
+        int percent = (int)((total_written * 100) / contentLength);
+        if (percent != prev_percent && (percent % 10 == 0 || percent == 100)) {
+          prev_percent = percent;
+          logPrintf("[OTA] Ghi Flash: %d%% (%u / %d bytes)", percent, total_written, contentLength);
+        }
       }
     } else {
-      if (total_written / (100 * 1024) != (total_written - written) / (100 * 1024)) {
-        logPrintf("[OTA] Ghi Flash: %u KB da tai", total_written / 1024);
+      if (millis() - last_progress_time > 15000) {
+        logMessage("[OTA-LOI] Qua thoi gian cho du lieu stream (15s timeout)!");
+        break;
       }
+      delay(5);
     }
 
-    // Nhường CPU cho stack BLE và lwIP duy trì kết nối không bị ngắt ('Connection lost')
     if (millis() - last_yield > 20) {
       vTaskDelay(pdMS_TO_TICKS(2));
       last_yield = millis();
     }
   }
 
-  esp_http_client_close(client);
-  esp_http_client_cleanup(client);
+  http.end();
 
-  if (Update.hasError() || !Update.end(true)) {
-    logPrintf("[OTA-LOI] Hoan tat Update that bai (Ma loi: %d)", Update.getError());
+  if (total_written == (size_t)contentLength && Update.end(true)) {
+    logPrintf("[OTA] 🎉 Nap Flash thanh cong 100%% (%u bytes)! Dang khoi dong lai vao Firmware moi...", total_written);
+    delay(1000);
+    ESP.restart();
+    return true;
+  } else {
+    logPrintf("[OTA-LOI] Ghi Flash that bai hoac bi dut quang (Da ghi: %u/%d, Loi: %d)", total_written, contentLength, Update.getError());
+    Update.abort();
     return false;
   }
-
-  if (!Update.isFinished()) {
-    logMessage("[OTA-LOI] Update chua hoan tat day du!");
-    return false;
-  }
-
-  logPrintf("[OTA] 🎉 Nap Flash thanh cong 100%% (%u bytes)! Dang khoi dong lai vao Firmware moi...", total_written);
-  delay(1000);
-  ESP.restart();
-  return true;
 }
 
 // Tải file firmware .bin từ GitHub/CDN và nạp vào phân vùng OTA của bộ nhớ Flash
@@ -1959,66 +1882,24 @@ void configureSoftApDhcp(bool randomizePool) {
         prefs.putString("dhcp_start", dhcp_start_str);
         prefs.putString("dhcp_end", dhcp_end_str);
         prefs.end();
-        Serial.println("[DHCP] Tu dong dong bo Subnet Mask thanh 255.255.255.0 (/24) va dai IP " + dhcp_start_str + " -> " + dhcp_end_str);
-        addLogToBuffer("[DHCP] Tu dong dong bo Subnet Mask thanh 255.255.255.0 (/24) va dai IP " + dhcp_start_str + " -> " + dhcp_end_str);
       }
 
       // 1. Tạm dừng DHCPS để cài đặt thông số IP info và DHCP options
       esp_netif_dhcps_stop(ap_netif);
 
-      // 2. Cấu hình IP và Subnet Mask /24 trực tiếp qua ESP-IDF
-      bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
+      // 2. Luôn cấp Gateway IP (10.51.31.254) và Subnet Mask /24 cho SoftAP
       esp_netif_ip_info_t ip_info;
       ip_info.ip.addr = (uint32_t)gw_ip;
       ip_info.netmask.addr = (uint32_t)sub_ip;
-      ip_info.gw.addr = has_uplink ? (uint32_t)gw_ip : 0; // Khi có Internet STA: Gateway = gw_ip để DHCP cấp Option 3 cho client; Khi tắt STA: Gateway = 0.0.0.0 để điện thoại dùng 5G
+      ip_info.gw.addr = (uint32_t)gw_ip; // Luôn là Gateway IP để client có default route
       esp_netif_set_ip_info(ap_netif, &ip_info);
 
-      uint32_t s_u32 = ipToU32(s_ip);
-      uint32_t e_u32 = ipToU32(e_ip);
-      uint32_t gw_u32 = ipToU32(gw_ip);
-
-      if (e_u32 < s_u32) {
-        uint32_t tmp = s_u32; s_u32 = e_u32; e_u32 = tmp;
-      }
-
-      uint32_t total = e_u32 - s_u32 + 1;
-      const uint32_t WINDOW_SIZE = 60; // ESP-IDF DHCPS_MAX_LEASE mac dinh la 100
-
-      // Chi sinh ngau nhien pool moi khi chua co pool hoac khi duoc yeu cau (khi tat ca client da ngat)
-      if (active_pool_start == 0 || active_pool_end == 0 || randomizePool) {
-        uint32_t cur_start = s_u32;
-        uint32_t cur_end = e_u32;
-
-        if (total > WINDOW_SIZE) {
-          uint32_t max_offset = total - WINDOW_SIZE;
-          uint32_t rand_offset = esp_random() % (max_offset + 1);
-          cur_start = s_u32 + rand_offset;
-          cur_end = cur_start + WINDOW_SIZE - 1;
-
-          // Tranh trung IP voi Gateway
-          if (gw_u32 >= cur_start && gw_u32 <= cur_end) {
-            if (cur_start >= s_u32 + WINDOW_SIZE) {
-              cur_start -= WINDOW_SIZE;
-              cur_end -= WINDOW_SIZE;
-            } else if (cur_end + WINDOW_SIZE <= e_u32) {
-              cur_start += WINDOW_SIZE;
-              cur_end += WINDOW_SIZE;
-            }
-          }
-        }
-        active_pool_start = cur_start;
-        active_pool_end = cur_end;
-        logPrintf("[DHCP] Da chon ngau nhien pool cap IP: %s -> %s (trong tong dai %s -> %s)",
-                  u32ToIp(active_pool_start).toString().c_str(), u32ToIp(active_pool_end).toString().c_str(),
-                  dhcp_start_str.c_str(), dhcp_end_str.c_str());
-      }
-
+      // Dải cấp IP cố định theo cấu hình đã lưu, không đảo lộn ngẫu nhiên
       dhcps_lease_t lease;
       memset(&lease, 0, sizeof(lease));
       lease.enable = true;
-      lease.start_ip.addr = (uint32_t)u32ToIp(active_pool_start);
-      lease.end_ip.addr   = (uint32_t)u32ToIp(active_pool_end);
+      lease.start_ip.addr = (uint32_t)s_ip;
+      lease.end_ip.addr   = (uint32_t)e_ip;
 
       esp_err_t opt_err = esp_netif_dhcps_option(
         ap_netif,
@@ -2035,10 +1916,10 @@ void configureSoftApDhcp(bool randomizePool) {
     }
 
     // 1. Cấu hình Option 3 (Router / Default Gateway):
-    // Chỉ cấp Gateway khi THỰC SỰ có kết nối Wi-Fi nguồn (has_uplink)
-    // Khi chưa có Internet STA hoặc khi tắt STA (chế độ 5G): TẮT Option 3 (OFFER_ROUTER = 0) -> Điện thoại dùng 5G không bị mất mạng!
-    bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
-    dhcps_offer_t dhcps_router_value = has_uplink ? OFFER_ROUTER : 0;
+    // Luôn cấp Gateway để điện thoại nhận diện default route.
+    // Khi STA tắt, uplink probe không tới được Internet -> Android tự động kích hoạt Poor Network -> Dùng 5G
+    // Trong khi vẫn duy trì truy cập Gateway Manager http://10.51.31.254/ qua Wi-Fi.
+    dhcps_offer_t dhcps_router_value = OFFER_ROUTER;
     esp_netif_dhcps_option(
       ap_netif,
       ESP_NETIF_OP_SET,
@@ -2048,9 +1929,7 @@ void configureSoftApDhcp(bool randomizePool) {
     );
 
     // 2. Cấu hình Option 6 (Domain Name Server - DNS):
-    // Khi có Internet STA: Cấp DNS Server để client duyệt web trực tiếp qua NAPT
-    // Khi chưa có Internet STA: KHÔNG cấp DNS (dhcps_dns_value = 0) để điện thoại dùng DNS 5G
-    dhcps_offer_t dhcps_dns_value = has_uplink ? OFFER_DNS : 0;
+    dhcps_offer_t dhcps_dns_value = OFFER_DNS;
     esp_netif_dhcps_option(
       ap_netif,
       ESP_NETIF_OP_SET,
@@ -2059,35 +1938,28 @@ void configureSoftApDhcp(bool randomizePool) {
       sizeof(dhcps_dns_value)
     );
 
-    if (dhcps_dns_value == OFFER_DNS) {
-      esp_netif_dns_info_t dns_main, dns_backup;
-      dns_main.ip.type = ESP_IPADDR_TYPE_V4;
-      dns_backup.ip.type = ESP_IPADDR_TYPE_V4;
+    esp_netif_dns_info_t dns_main, dns_backup;
+    dns_main.ip.type = ESP_IPADDR_TYPE_V4;
+    dns_backup.ip.type = ESP_IPADDR_TYPE_V4;
 
-      IPAddress upstreamDns = WiFi.dnsIP(0);
-      if (upstreamDns == IPAddress(0, 0, 0, 0)) {
-        upstreamDns = IPAddress(8, 8, 8, 8); // Google Public DNS
-      }
-      dns_main.ip.u_addr.ip4.addr = (uint32_t)upstreamDns;
-
-      IPAddress backupDns = WiFi.dnsIP(1);
-      if (backupDns == IPAddress(0, 0, 0, 0) || backupDns == upstreamDns) {
-        backupDns = IPAddress(1, 1, 1, 1); // Cloudflare Public DNS
-      }
-      dns_backup.ip.u_addr.ip4.addr = (uint32_t)backupDns;
-
-      esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_MAIN, &dns_main);
-      esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_BACKUP, &dns_backup);
+    IPAddress upstreamDns = (sta_enabled && WiFi.status() == WL_CONNECTED) ? WiFi.dnsIP(0) : IPAddress(8, 8, 8, 8);
+    if (upstreamDns == IPAddress(0, 0, 0, 0)) {
+      upstreamDns = IPAddress(8, 8, 8, 8);
     }
+    dns_main.ip.u_addr.ip4.addr = (uint32_t)upstreamDns;
+
+    IPAddress backupDns = (sta_enabled && WiFi.status() == WL_CONNECTED) ? WiFi.dnsIP(1) : IPAddress(1, 1, 1, 1);
+    if (backupDns == IPAddress(0, 0, 0, 0) || backupDns == upstreamDns) {
+      backupDns = IPAddress(1, 1, 1, 1);
+    }
+    dns_backup.ip.u_addr.ip4.addr = (uint32_t)backupDns;
+
+    esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_MAIN, &dns_main);
+    esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_BACKUP, &dns_backup);
 
     esp_err_t start_err = esp_netif_dhcps_start(ap_netif);
-    logPrintf("[DHCP] Khoi chay Native ESP-IDF DHCP Server! (Ket qua: %d)", start_err);
-
-    // Luon dam bao Default Netif la STA khi da ket noi Wi-Fi nguon
-    esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    if (sta_netif != NULL && has_uplink) {
-      esp_netif_set_default_netif(sta_netif);
-    }
+    logPrintf("[DHCP] Khoi chay Native ESP-IDF DHCP Server! (Ket qua: %d | Pool: %s -> %s | GW: %s)",
+              start_err, dhcp_start_str.c_str(), dhcp_end_str.c_str(), ap_ip_str.c_str());
   } else {
     logMessage("[DHCP-LOI] Khong tim thay netif WIFI_AP_DEF!");
   }
@@ -2103,11 +1975,7 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
     Serial.println(buf);
     addLogToBuffer(String(buf));
 
-    // Chi yeu cau tai ngau nhien pool IP khi tat ca thiet bi deu da ngat ket noi
-    wifi_sta_list_t sta_list;
-    if (esp_wifi_ap_get_sta_list(&sta_list) == ESP_OK && sta_list.num == 0) {
-      dhcp_reconfigure_needed = true;
-    }
+    // Giu nguyen pool IP co dinh, khong doi ngau nhien lam rot ket noi DHCP
   } else if (event == ARDUINO_EVENT_WIFI_AP_STACONNECTED) {
     uint8_t *mac = info.wifi_ap_staconnected.mac;
     char buf[120];
@@ -2988,7 +2856,7 @@ void setup() {
   applyTxPower(tx_power_boost);
 
   // Bước 7: Cấu hình dải IP cho Native ESP-IDF DHCP Server
-  configureSoftApDhcp(true);
+  configureSoftApDhcp(false);
 
   logPrintf("[AP] Phat song thanh cong: SSID: '%s' | MAC: %s | Gateway: %s | Kenh: %d%s", 
             ap_ssid.c_str(), WiFi.softAPmacAddress().c_str(), WiFi.softAPIP().toString().c_str(),
@@ -3086,15 +2954,7 @@ void loop() {
   // 1b. Phục vụ các yêu cầu Web Server
   server.handleClient();
 
-  // 1c. Kiem tra co can chon ngau nhien pool IP moi khi tat ca client da ngat ket noi
-  if (dhcp_reconfigure_needed) {
-    dhcp_reconfigure_needed = false;
-    wifi_sta_list_t sta_list;
-    if (esp_wifi_ap_get_sta_list(&sta_list) == ESP_OK && sta_list.num == 0) {
-      logMessage("[DHCP] Tat ca thiet bi da ngat ket noi -> Chon ngau nhien pool IP moi...");
-      configureSoftApDhcp(true);
-    }
-  }
+  // Giu nguyen pool IP co dinh theo yeu cau nguoi dung
 
   // 2. Phục vụ Captive DNS Server nếu chưa có Internet
   if (dns_captive_running) {
@@ -3191,7 +3051,7 @@ void loop() {
       sta_conn_state = STA_STATE_IDLE;
       disableNapt();
       stopCaptiveDns();
-      configureSoftApDhcp(true);
+      configureSoftApDhcp(false);
       delay(50);
       esp_wifi_deauth_sta(0);
       logMessage("[MODE] Da TAT Wi-Fi nguon -> Che do MANG NOI BO (Dien thoai dung 5G).");

@@ -1,5 +1,5 @@
 {
   "version": "1.4.0",
   "url": "https://cdn.jsdelivr.net/gh/silversymphony/esp32-firmware@main/esp32_v1.4.0/esp32_v1.4.0.ino.bin",
-  "changelog": "Bản phát hành v1.4.0: Khôi phục chuẩn chuyển vùng 5G và DHCP ngẫu nhiên như v1.3.8 (tắt Option 3 & 6 khi tắt STA, deauth client để ép nhận lease mới); giữ nguyên ghi nhận IP cấp phát; sửa dứt điểm lỗi HTTPS OTA và tối ưu bộ nhớ TLS."
+  "changelog": "Bản phát hành v1.4.0: Cố định dải DHCP pool SoftAP không đổi ngẫu nhiên khi thiết bị ngắt kết nối; ghi nhận thông báo IP cụ thể khi cấp thành công; kích hoạt chuẩn chuyển vùng 5G di động khi tắt Wi-Fi nguồn; sửa dứt điểm lỗi kết nối HTTPS OTA và xác thực chứng chỉ."
 }

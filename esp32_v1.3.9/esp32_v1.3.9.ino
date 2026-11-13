@@ -58,6 +58,7 @@ extern "C" {
 #include <lwip/netdb.h>
 #include <WiFiUdp.h>
 #include <Update.h>
+#include <esp_ota_ops.h>
 #include <ESPmDNS.h>
 
 // Nhúng thư viện nâng cấp Firmware không dây qua GitHub HTTPS (NetworkClientSecure siêu nhẹ, bypass TLS RSA heap)
@@ -871,7 +872,7 @@ void handleBleCommand(String cmd) {
     String newSub = payload.substring(comma + 1);
     newIp.trim(); newSub.trim();
     String autoStart = String(newIp.substring(0, newIp.lastIndexOf('.') + 1)) + "10";
-    String autoEnd = String(newIp.substring(0, newIp.lastIndexOf('.') + 1)) + "200";
+    String autoEnd = String(newIp.substring(0, newIp.lastIndexOf('.') + 1)) + "50";
     String poolErr = validateDhcpPool(newIp, newSub, autoStart, autoEnd);
     if (poolErr.length() > 0) {
       sendResponse("[ERROR] " + poolErr);
@@ -893,12 +894,12 @@ void handleBleCommand(String cmd) {
     return;
   }
 
-  // 9. DHCP:start,end: Cấu hình dải cấp IP ngẫu nhiên
+  // 9. DHCP:start,end: Cấu hình dải cấp IP ngẫu nhiên (< 60 IP)
   if (cmd.startsWith("DHCP:") || cmd.startsWith("dhcp:")) {
     String payload = cmd.substring(5); payload.trim();
     int comma = payload.indexOf(',');
     if (comma < 0) {
-      sendResponse("[ERROR] Cu phap sai! Hay dung: DHCP:IP_BatDau,IP_KetThuc (Vi du: DHCP:10.51.31.10,10.51.31.200)");
+      sendResponse("[ERROR] Cu phap sai! Hay dung: DHCP:IP_BatDau,IP_KetThuc (Vi du: DHCP:10.51.31.10,10.51.31.50)");
       return;
     }
     String startIp = payload.substring(0, comma);
@@ -1681,16 +1682,15 @@ bool executeOtaDownload(const String &dlUrl) {
   }
 
   int contentLength = http.getSize();
-  if (contentLength <= 0) {
-    logPrintf("[OTA-LOI] Do dai firmware khong hop le: %d", contentLength);
-    http.end();
-    return false;
+  if (contentLength > 0) {
+    logPrintf("[OTA] Kich thuoc Firmware: %d bytes (%.2f MB)", contentLength, (float)contentLength / (1024.0 * 1024.0));
+  } else {
+    logPrintf("[OTA] Kich thuoc Firmware: Khong xac dinh (HTTP Chunked Streaming qua CDN jsDelivr/Cloudflare)");
   }
 
-  logPrintf("[OTA] Kich thuoc Firmware: %d bytes (%.2f MB)", contentLength, (float)contentLength / (1024.0 * 1024.0));
-
-  if (!Update.begin(contentLength)) {
-    logPrintf("[OTA-LOI] Khong du bo nho Flash de OTA (Loi: %d)", Update.getError());
+  size_t updateSize = (contentLength > 0) ? (size_t)contentLength : UPDATE_SIZE_UNKNOWN;
+  if (!Update.begin(updateSize)) {
+    logPrintf("[OTA-LOI] Khong du bo nho Flash hoac loi khoi tao OTA (Loi: %d)", Update.getError());
     http.end();
     return false;
   }
@@ -1702,27 +1702,41 @@ bool executeOtaDownload(const String &dlUrl) {
   unsigned long last_progress_time = millis();
   unsigned long last_yield = millis();
 
-  while (http.connected() && (total_written < (size_t)contentLength)) {
+  while ((http.connected() || (stream && stream->available() > 0)) && 
+         (contentLength <= 0 || total_written < (size_t)contentLength)) {
+    if (!stream) break;
     size_t sizeAvailable = stream->available();
-    if (sizeAvailable) {
-      int c = stream->readBytes(ota_buf, ((sizeAvailable > sizeof(ota_buf)) ? sizeof(ota_buf) : sizeAvailable));
+    if (sizeAvailable > 0) {
+      int toRead = (sizeAvailable > sizeof(ota_buf)) ? sizeof(ota_buf) : sizeAvailable;
+      int c = stream->readBytes(ota_buf, toRead);
       if (c > 0) {
         size_t written = Update.write(ota_buf, c);
         if (written != (size_t)c) {
-          logPrintf("[OTA-LOI] Ghi Flash that bai! (Da ghi: %u / %d)", total_written, contentLength);
+          logPrintf("[OTA-LOI] Ghi Flash that bai! (Da ghi: %u, Loi: %d)", total_written, Update.getError());
           Update.abort();
           break;
         }
         total_written += written;
         last_progress_time = millis();
 
-        int percent = (int)((total_written * 100) / contentLength);
-        if (percent != prev_percent && (percent % 10 == 0 || percent == 100)) {
-          prev_percent = percent;
-          logPrintf("[OTA] Ghi Flash: %d%% (%u / %d bytes)", percent, total_written, contentLength);
+        if (contentLength > 0) {
+          int percent = (int)((total_written * 100) / contentLength);
+          if (percent != prev_percent && (percent % 10 == 0 || percent == 100)) {
+            prev_percent = percent;
+            logPrintf("[OTA] Ghi Flash: %d%% (%u / %d bytes)", percent, total_written, contentLength);
+          }
+        } else {
+          int step100k = total_written / 102400;
+          if (step100k != prev_percent) {
+            prev_percent = step100k;
+            logPrintf("[OTA] Ghi Flash: %u bytes (%.2f MB)...", total_written, (float)total_written / (1024.0 * 1024.0));
+          }
         }
       }
     } else {
+      if (!http.connected()) {
+        break; // Stream hoàn tất bình thường
+      }
       if (millis() - last_progress_time > 15000) {
         logMessage("[OTA-LOI] Qua thoi gian cho du lieu stream (15s timeout)!");
         break;
@@ -1738,7 +1752,8 @@ bool executeOtaDownload(const String &dlUrl) {
 
   http.end();
 
-  if (total_written == (size_t)contentLength && Update.end(true)) {
+  bool download_ok = (contentLength > 0) ? (total_written == (size_t)contentLength) : (total_written > 500000);
+  if (download_ok && Update.end(true)) {
     logPrintf("[OTA] 🎉 Nap Flash thanh cong 100%% (%u bytes)! Dang khoi dong lai vao Firmware moi...", total_written);
     delay(1000);
     ESP.restart();
@@ -1917,9 +1932,13 @@ String validateDhcpPool(const String &gwStr, const String &subStr, const String 
     return "IP Gateway (" + gwStr + ") khong duoc nam ben trong dai cap phat DHCP (" + startStr + " -> " + endStr + ") de tranh xung dot IP!";
   }
 
-  // 5. Kiểm tra số lượng IP tối thiểu
-  if (endU32 - startU32 + 1 < 2) {
+  // 5. Kiểm tra số lượng IP tối thiểu và tối đa (< 60 IP)
+  uint32_t count = endU32 - startU32 + 1;
+  if (count < 2) {
     return "Dai DHCP phai co it nhat 2 dia chi IP de thiet bi co the ket noi!";
+  }
+  if (count >= 60) {
+    return "Dai DHCP phai nho hon 60 dia chi IP (hien tai co " + String(count) + " IP)! Vui long rut ngan dai IP.";
   }
 
   return ""; // Hợp lệ
@@ -2025,7 +2044,7 @@ void configureSoftApDhcp(bool randomizePool) {
       if (s_ip[0] != gw_ip[0] || s_ip[1] != gw_ip[1] || s_ip[2] != gw_ip[2] || ap_subnet_str == "255.255.252.0") {
         ap_subnet_str = "255.255.255.0";
         dhcp_start_str = String(gw_ip[0]) + "." + String(gw_ip[1]) + "." + String(gw_ip[2]) + ".10";
-        dhcp_end_str   = String(gw_ip[0]) + "." + String(gw_ip[1]) + "." + String(gw_ip[2]) + ".200";
+        dhcp_end_str   = String(gw_ip[0]) + "." + String(gw_ip[1]) + "." + String(gw_ip[2]) + ".50";
         sub_ip.fromString(ap_subnet_str);
         s_ip.fromString(dhcp_start_str);
         e_ip.fromString(dhcp_end_str);
@@ -2040,55 +2059,37 @@ void configureSoftApDhcp(bool randomizePool) {
       esp_netif_dhcps_stop(ap_netif);
 
       // 2. Cấu hình IP và Subnet Mask /24:
-      // Luôn gán Gateway của SoftAP interface là gw_ip (10.51.31.254) để thiết bị nhận IP hợp lệ và thực hiện kiểm tra mạng
+      // Khi CÓ Internet STA: Gateway = gw_ip để DHCP cấp Option 3 cho client truy cập Internet qua NAPT
+      // Khi TẮT STA (Mạng nội bộ): Gateway = 0.0.0.0 để điện thoại không bị chiếm default route, tự động dùng 5G!
+      bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
       esp_netif_ip_info_t ip_info;
       ip_info.ip.addr = (uint32_t)gw_ip;
       ip_info.netmask.addr = (uint32_t)sub_ip;
-      ip_info.gw.addr = (uint32_t)gw_ip;
+      ip_info.gw.addr = has_uplink ? (uint32_t)gw_ip : 0;
       esp_netif_set_ip_info(ap_netif, &ip_info);
 
-      // Dải cấp IP ngẫu nhiên trong tổng dải cấu hình
+      // Dải cấp IP ngẫu nhiên trong dải < 60 IP do người dùng cấu hình
       uint32_t s_u32 = ipToU32(s_ip);
       uint32_t e_u32 = ipToU32(e_ip);
-      uint32_t gw_u32 = ipToU32(gw_ip);
 
       if (e_u32 < s_u32) {
         uint32_t tmp = s_u32; s_u32 = e_u32; e_u32 = tmp;
       }
 
       uint32_t total = e_u32 - s_u32 + 1;
-      const uint32_t MAX_WINDOW = 60; // Giới hạn cửa sổ cấp phát <= 60 địa chỉ (ESP-IDF DHCPS_MAX_LEASE = 100)
-      uint32_t win_size = (total > MAX_WINDOW) ? MAX_WINDOW : ((total > 10) ? (total / 2 + 1) : total);
-
-      // Tái chọn ngẫu nhiên cửa sổ pool khi chưa có hoặc khi được yêu cầu (tất cả client đã ngắt kết nối hoặc reboot)
-      if (active_pool_start == 0 || active_pool_end == 0 || randomizePool || 
-          active_pool_start < s_u32 || active_pool_end > e_u32) {
-        uint32_t cur_start = s_u32;
-        uint32_t cur_end = e_u32;
-
-        if (total > win_size) {
-          uint32_t max_offset = total - win_size;
-          uint32_t rand_offset = esp_random() % (max_offset + 1);
-          cur_start = s_u32 + rand_offset;
-          cur_end = cur_start + win_size - 1;
-
-          // Đảm bảo không trùng IP Gateway
-          if (gw_u32 >= cur_start && gw_u32 <= cur_end) {
-            if (cur_start >= s_u32 + win_size) {
-              cur_start -= win_size;
-              cur_end -= win_size;
-            } else if (cur_end + win_size <= e_u32) {
-              cur_start += win_size;
-              cur_end += win_size;
-            }
-          }
-        }
-        active_pool_start = cur_start;
-        active_pool_end = cur_end;
-        logPrintf("[DHCP] Da chon ngau nhien pool cap IP: %s -> %s (trong tong dai %s -> %s)",
-                  u32ToIp(active_pool_start).toString().c_str(), u32ToIp(active_pool_end).toString().c_str(),
-                  dhcp_start_str.c_str(), dhcp_end_str.c_str());
+      if (total >= 60) {
+        e_u32 = s_u32 + 40; // Ép về 41 địa chỉ IP nếu cấu hình cũ vượt quá giới hạn < 60
+        total = 41;
       }
+
+      // Cấp phát IP ngẫu nhiên trong dải: Bắt đầu tại vị trí ngẫu nhiên khi randomizePool = true
+      uint32_t cur_start = s_u32;
+      if (randomizePool && total > 3) {
+        uint32_t shift = esp_random() % (total / 3 + 1);
+        cur_start = s_u32 + shift;
+      }
+      active_pool_start = cur_start;
+      active_pool_end = e_u32;
 
       IPAddress act_s = u32ToIp(active_pool_start);
       IPAddress act_e = u32ToIp(active_pool_end);
@@ -2109,16 +2110,18 @@ void configureSoftApDhcp(bool randomizePool) {
       if (opt_err != ESP_OK) {
         logPrintf("[DHCP] Set dai IP that bai: %d", opt_err);
       } else {
-        logPrintf("[DHCP] Set thanh cong dai IP ngau nhien: %s -> %s", act_s.toString().c_str(), act_e.toString().c_str());
+        logPrintf("[DHCP] Set thanh cong dai IP: %s -> %s (Cap phat ngau nhien trong dai)", 
+                  u32ToIp(s_u32).toString().c_str(), u32ToIp(e_u32).toString().c_str());
       }
     } else {
       esp_netif_dhcps_stop(ap_netif);
     }
 
     // 1. Cấu hình Option 3 (Router / Default Gateway):
-    // Luôn cấp Gateway (10.51.31.254) để điện thoại nhận DHCP hoàn chỉnh.
-    // Khi tắt STA (không có Internet), điện thoại kiểm tra Gateway thấy không có kết nối ra ngoài sẽ tự động chuyển sang 5G (Poor network)!
-    dhcps_offer_t dhcps_router_value = OFFER_ROUTER;
+    // Chỉ cấp Gateway khi THỰC SỰ có kết nối Wi-Fi nguồn (has_uplink)
+    // Khi chưa có Internet STA hoặc khi tắt STA (chế độ 5G): TẮT Option 3 (OFFER_ROUTER = 0) -> Điện thoại dùng 5G không bị chiếm default route!
+    bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
+    dhcps_offer_t dhcps_router_value = has_uplink ? OFFER_ROUTER : 0;
     esp_netif_dhcps_option(
       ap_netif,
       ESP_NETIF_OP_SET,
@@ -2128,8 +2131,9 @@ void configureSoftApDhcp(bool randomizePool) {
     );
 
     // 2. Cấu hình Option 6 (Domain Name Server - DNS):
-    // Luôn cấp DNS Server để thiết bị phân giải tên miền nhanh chóng
-    dhcps_offer_t dhcps_dns_value = OFFER_DNS;
+    // Khi có Internet STA: Cấp DNS Server để client duyệt web trực tiếp qua NAPT
+    // Khi chưa có Internet STA: KHÔNG cấp DNS (dhcps_dns_value = 0) để điện thoại dùng DNS 5G
+    dhcps_offer_t dhcps_dns_value = has_uplink ? OFFER_DNS : 0;
     esp_netif_dhcps_option(
       ap_netif,
       ESP_NETIF_OP_SET,
@@ -2138,31 +2142,33 @@ void configureSoftApDhcp(bool randomizePool) {
       sizeof(dhcps_dns_value)
     );
 
-    esp_netif_dns_info_t dns_main, dns_backup;
-    dns_main.ip.type = ESP_IPADDR_TYPE_V4;
-    dns_backup.ip.type = ESP_IPADDR_TYPE_V4;
+    if (dhcps_dns_value == OFFER_DNS) {
+      esp_netif_dns_info_t dns_main, dns_backup;
+      dns_main.ip.type = ESP_IPADDR_TYPE_V4;
+      dns_backup.ip.type = ESP_IPADDR_TYPE_V4;
 
-    IPAddress upstreamDns = WiFi.dnsIP(0);
-    if (upstreamDns == IPAddress(0, 0, 0, 0)) {
-      upstreamDns = IPAddress(8, 8, 8, 8); // Google Public DNS
+      IPAddress upstreamDns = WiFi.dnsIP(0);
+      if (upstreamDns == IPAddress(0, 0, 0, 0)) {
+        upstreamDns = IPAddress(8, 8, 8, 8); // Google Public DNS
+      }
+      dns_main.ip.u_addr.ip4.addr = (uint32_t)upstreamDns;
+
+      IPAddress backupDns = WiFi.dnsIP(1);
+      if (backupDns == IPAddress(0, 0, 0, 0) || backupDns == upstreamDns) {
+        backupDns = IPAddress(1, 1, 1, 1); // Cloudflare Public DNS
+      }
+      dns_backup.ip.u_addr.ip4.addr = (uint32_t)backupDns;
+
+      esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_MAIN, &dns_main);
+      esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_BACKUP, &dns_backup);
     }
-    dns_main.ip.u_addr.ip4.addr = (uint32_t)upstreamDns;
-
-    IPAddress backupDns = WiFi.dnsIP(1);
-    if (backupDns == IPAddress(0, 0, 0, 0) || backupDns == upstreamDns) {
-      backupDns = IPAddress(1, 1, 1, 1); // Cloudflare Public DNS
-    }
-    dns_backup.ip.u_addr.ip4.addr = (uint32_t)backupDns;
-
-    esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_MAIN, &dns_main);
-    esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_BACKUP, &dns_backup);
 
     esp_err_t start_err = esp_netif_dhcps_start(ap_netif);
-    logPrintf("[DHCP] Khoi chay Native ESP-IDF DHCP Server! (Ket qua: %d | Pool: %s -> %s | Gateway: %s)",
-              start_err, dhcp_start_str.c_str(), dhcp_end_str.c_str(), ap_ip_str.c_str());
+    logPrintf("[DHCP] Khoi chay Native ESP-IDF DHCP Server! (Ket qua: %d | Pool: %s -> %s | Mode: %s)",
+              start_err, dhcp_start_str.c_str(), dhcp_end_str.c_str(),
+              has_uplink ? "Internet NAT" : "Offline 5G Cell");
 
     // Luon dam bao Default Netif la STA khi da ket noi Wi-Fi nguon
-    bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
     esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (sta_netif != NULL && has_uplink) {
       esp_netif_set_default_netif(sta_netif);
@@ -2282,9 +2288,9 @@ void handleCaptiveRedirect() {
   String uri = server.uri();
   String host = server.hostHeader();
 
-  // 1. Khi CÓ kết nối Internet Wi-Fi nguồn (hoặc khi ở chế độ 5G !sta_enabled):
+  // 1. Khi CÓ kết nối Internet Wi-Fi nguồn:
   // Phản hồi Success / 204 ngay lập tức cho các probe kiểm tra của điện thoại để điện thoại nhận biết đã có Internet
-  if ((sta_enabled && WiFi.status() == WL_CONNECTED) || !sta_enabled) {
+  if (sta_enabled && WiFi.status() == WL_CONNECTED) {
     if (uri.indexOf("hotspot-detect") >= 0 || uri.indexOf("success.html") >= 0 || uri.indexOf("canonical") >= 0 ||
         host.indexOf("apple") >= 0 || host.indexOf("airport") >= 0 || host.indexOf("ibook") >= 0 || 
         host.indexOf("itools") >= 0 || host.indexOf("thinkdifferent") >= 0) {
@@ -2317,9 +2323,15 @@ void handleCaptiveRedirect() {
   }
 
   // 2. Khi đang bật Wi-Fi nguồn nhưng CHƯA có mạng (chờ cấu hình): chuyển hướng về Web Portal để mở Captive Portal
-  if (host.length() > 0 && host != ap_ip_str && host != WiFi.localIP().toString() && host.indexOf("esp32.local") == -1) {
+  if (sta_enabled && host.length() > 0 && host != ap_ip_str && host != WiFi.localIP().toString() && host.indexOf("esp32.local") == -1) {
     server.sendHeader("Location", String("http://") + ap_ip_str + "/", true);
     server.send(302, "text/plain", "");
+    return;
+  }
+
+  // 3. Khi TẮT Wi-Fi nguồn (Mạng nội bộ 5G): Không bắt bớ các tên miền ngoài để điện thoại thoải mái dùng 5G
+  if (!sta_enabled && host.length() > 0 && host != ap_ip_str && host != WiFi.localIP().toString() && host.indexOf("esp32.local") == -1) {
+    server.send(404, "text/plain", "Not Found");
     return;
   }
   handleRoot();
@@ -3002,6 +3014,9 @@ void setup() {
   Serial.println("\n--- [KHOI TAO ESP32 REPEATER & CUSTOM RANDOM DHCP & BLE SECURE] ---");
   Serial.printf("[HARDWARE] Flash Chip Size: %d MB\n", ESP.getFlashChipSize() / (1024 * 1024));
 
+  // Xác thực phân vùng ứng dụng mới chạy thành công, hủy bỏ cơ chế Rollback của ESP-IDF OTA
+  esp_ota_mark_app_valid_cancel_rollback();
+
   // Vo hieu hoa tinh nang tiet kiem dien Modem Sleep tren Wi-Fi de dam bao SoftAP phat song lien tuc,
   // khong bi giat lag, rot goi tin hoac vang ket noi thiet bi.
   WiFi.enableIPv6(false); // Tat IPv6 de tranh tra ve ban ghi AAAA gay loi connect khong co route
@@ -3049,19 +3064,22 @@ void setup() {
   ap_ip_str      = prefs.getString("ap_ip", "10.51.31.254");
   ap_subnet_str  = prefs.getString("ap_subnet", "255.255.255.0");
   dhcp_start_str = prefs.getString("dhcp_start", "10.51.31.10");
-  dhcp_end_str   = prefs.getString("dhcp_end", "10.51.31.200"); // Dải IP cấp ngẫu nhiên 10.51.31.x cùng subnet Gateway
+  dhcp_end_str   = prefs.getString("dhcp_end", "10.51.31.50"); // Dải IP cấp ngẫu nhiên < 60 IP cùng subnet Gateway
   tx_power_boost = prefs.getBool("tx_boost", false);            // Mặc định KHÔNG BẬT (15 dBm Standard)
   ble_enabled     = prefs.getBool("ble_en", true);               // Bật sóng Bluetooth LE
   ble_pin         = prefs.getUInt("ble_pin", 123456);             // Mã PIN ghép đôi 6 số (mặc định: 123456)
   ota_version_url = prefs.getString("ota_url", "https://cdn.jsdelivr.net/gh/silversymphony/esp32-firmware@main/version.json");
 
-  // Tự động đồng bộ Subnet Mask /24 (255.255.255.0) và dải IP cùng subnet với Gateway IP
-  IPAddress check_gw, check_s;
-  if (check_gw.fromString(ap_ip_str) && check_s.fromString(dhcp_start_str)) {
-    if (check_gw[0] != check_s[0] || check_gw[1] != check_s[1] || check_gw[2] != check_s[2] || ap_subnet_str == "255.255.252.0") {
+  // Tự động đồng bộ Subnet Mask /24 (255.255.255.0) và dải IP tuân thủ nguyên tắc < 60 IP cùng subnet với Gateway IP
+  IPAddress check_gw, check_s, check_e;
+  if (check_gw.fromString(ap_ip_str) && check_s.fromString(dhcp_start_str) && check_e.fromString(dhcp_end_str)) {
+    uint32_t s32 = ipToU32(check_s);
+    uint32_t e32 = ipToU32(check_e);
+    if (check_gw[0] != check_s[0] || check_gw[1] != check_s[1] || check_gw[2] != check_s[2] || 
+        ap_subnet_str == "255.255.252.0" || (e32 >= s32 && (e32 - s32 + 1) >= 60)) {
       ap_subnet_str = "255.255.255.0";
       dhcp_start_str = String(check_gw[0]) + "." + String(check_gw[1]) + "." + String(check_gw[2]) + ".10";
-      dhcp_end_str   = String(check_gw[0]) + "." + String(check_gw[1]) + "." + String(check_gw[2]) + ".200";
+      dhcp_end_str   = String(check_gw[0]) + "." + String(check_gw[1]) + "." + String(check_gw[2]) + ".50";
       prefs.putString("ap_subnet", ap_subnet_str);
       prefs.putString("dhcp_start", dhcp_start_str);
       prefs.putString("dhcp_end", dhcp_end_str);
@@ -3230,6 +3248,7 @@ void setup() {
       logMessage("[MODE] Wi-Fi nguon dang TAT -> MANG NOI BO OFFLINE. Dien thoai dung 5G.");
       disableNapt();
       stopCaptiveDns();
+      configureSoftApDhcp(false);
     }
   }
 
@@ -3325,7 +3344,6 @@ void loop() {
       stopCaptiveDns();
       configureSoftApDhcp(false);
       delay(50);
-      esp_wifi_deauth_sta(0);
       logMessage("[MODE] Da TAT Wi-Fi nguon -> Che do MANG NOI BO (Dien thoai dung 5G).");
     } else {
       triggerStaConnect();

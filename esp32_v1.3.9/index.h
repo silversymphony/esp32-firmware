@@ -434,7 +434,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
           </div>
           <div>
             <span id="lblDhcpEnd" style="font-size: 10px; color: var(--text-muted);">Kết thúc:</span>
-            <input type="text" id="dhcpEndInput" placeholder="10.51.31.200">
+            <input type="text" id="dhcpEndInput" placeholder="10.51.31.50">
           </div>
         </div>
 
@@ -443,10 +443,10 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             <span>ℹ️</span> <span id="lblDhcpNotesTitle">Ghi chú & Quy tắc cấu hình DHCP Pool:</span>
           </div>
           <div id="lblDhcpNotesContent">
+            • <b>Giới hạn số lượng:</b> Dải DHCP bắt buộc phải nhỏ hơn 60 địa chỉ IP (&lt; 60 IP).<br>
+            • <b>Cấp phát ngẫu nhiên:</b> Hệ thống sẽ cấp phát IP ngẫu nhiên trong dải này cho các thiết bị kết nối.<br>
             • <b>Cùng lớp mạng:</b> IP Bắt đầu và Kết thúc phải cùng Subnet với Gateway IP (Ví dụ Gateway <code>10.51.31.254</code> thì dải IP phải là <code>10.51.31.x</code>).<br>
-            • <b>Thứ tự IP:</b> IP Bắt đầu phải nhỏ hơn hoặc bằng IP Kết thúc (Không chứa địa chỉ mạng <code>.0</code> và broadcast <code>.255</code>).<br>
             • <b>Tránh trùng Gateway:</b> IP Gateway không được nằm trong dải IP DHCP để tránh xung đột địa chỉ IP.<br>
-            • <b>Cấp IP ngẫu nhiên:</b> Hệ thống tự động chọn ngẫu nhiên một cửa sổ IP trong tổng dải pool này mỗi khi toàn bộ thiết bị ngắt kết nối, giúp tăng tính bảo mật và ẩn danh thiết bị.<br>
             • <b>Khởi động lại:</b> Khi lưu cài đặt, ESP32 sẽ tự khởi động lại để áp dụng dải IP mới.
           </div>
         </div>
@@ -694,7 +694,7 @@ var I18N = {
     lblDhcpStart: "Bắt đầu:",
     lblDhcpEnd: "Kết thúc:",
     lblDhcpNotesTitle: "Ghi chú & Quy tắc cấu hình DHCP Pool:",
-    lblDhcpNotesContent: "• <b>Cùng lớp mạng:</b> IP Bắt đầu và Kết thúc phải cùng Subnet với Gateway IP (Ví dụ Gateway <code>10.51.31.254</code> thì dải IP phải là <code>10.51.31.x</code>).<br>• <b>Thứ tự IP:</b> IP Bắt đầu phải nhỏ hơn hoặc bằng IP Kết thúc (Không chứa địa chỉ mạng <code>.0</code> và broadcast <code>.255</code>).<br>• <b>Tránh trùng Gateway:</b> IP Gateway không được nằm trong dải IP DHCP để tránh xung đột địa chỉ IP.<br>• <b>Cấp IP ngẫu nhiên:</b> Hệ thống tự động chọn ngẫu nhiên một cửa sổ IP trong tổng dải pool này mỗi khi toàn bộ thiết bị ngắt kết nối, giúp tăng tính bảo mật và ẩn danh thiết bị.<br>• <b>Khởi động lại:</b> Khi lưu cài đặt, ESP32 sẽ tự khởi động lại để áp dụng dải IP mới.",
+    lblDhcpNotesContent: "• <b>Giới hạn số lượng:</b> Dải DHCP bắt buộc phải nhỏ hơn 60 địa chỉ IP (&lt; 60 IP).<br>• <b>Cấp phát ngẫu nhiên:</b> Hệ thống sẽ cấp phát IP ngẫu nhiên trong dải này cho các thiết bị kết nối.<br>• <b>Cùng lớp mạng:</b> IP Bắt đầu và Kết thúc phải cùng Subnet với Gateway IP (Ví dụ Gateway <code>10.51.31.254</code> thì dải IP phải là <code>10.51.31.x</code>).<br>• <b>Tránh trùng Gateway:</b> IP Gateway không được nằm trong dải IP DHCP để tránh xung đột địa chỉ IP.<br>• <b>Khởi động lại:</b> Khi lưu cài đặt, ESP32 sẽ tự khởi động lại để áp dụng dải IP mới.",
     noticeDhcp: "🔒 Cấu hình dải IP cấp phát cho các thiết bị kết nối vào mạng Wi-Fi phát.",
     btnSaveAp: "💾 Lưu Tham Số & Khởi Động Lại AP",
     btnRebootText: "Khởi Động Lại ESP32",
@@ -785,7 +785,7 @@ var I18N = {
     lblDhcpStart: "Start:",
     lblDhcpEnd: "End:",
     lblDhcpNotesTitle: "Rules & Notes for DHCP Pool Configuration:",
-    lblDhcpNotesContent: "• <b>Same Subnet:</b> Start and End IP must be in the same subnet as Gateway (e.g. Gateway <code>10.51.31.254</code> requires <code>10.51.31.x</code>).<br>• <b>IP Order:</b> Start IP must be less than or equal to End IP (Cannot use network address <code>.0</code> or broadcast <code>.255</code>).<br>• <b>No Gateway Conflict:</b> Gateway IP cannot be inside the DHCP range to avoid IP conflicts.<br>• <b>Random Allocation:</b> ESP32 automatically picks a random active IP sub-window within this configured pool whenever all devices disconnect, boosting privacy.<br>• <b>Reboot:</b> Saving parameters will restart ESP32 to apply the new IP pool.",
+    lblDhcpNotesContent: "• <b>Pool Limit:</b> DHCP range must be strictly less than 60 IP addresses (&lt; 60 IPs).<br>• <b>Random Allocation:</b> The system assigns random IP addresses within this pool to connecting devices.<br>• <b>Same Subnet:</b> Start and End IP must be in the same subnet as Gateway (e.g. Gateway <code>10.51.31.254</code> requires <code>10.51.31.x</code>).<br>• <b>No Gateway Conflict:</b> Gateway IP cannot be inside the DHCP range to avoid IP conflicts.<br>• <b>Reboot:</b> Saving parameters will restart ESP32 to apply the new IP pool.",
     noticeDhcp: "🔒 Configured IP address range allocated to clients connected to SoftAP.",
     btnSaveAp: "💾 Save Parameters & Restart AP",
     btnRebootText: "Reboot ESP32",
@@ -976,8 +976,8 @@ function renderStatus(d) {
   document.getElementById('valApSubnet').innerText = d.ap_subnet || '255.255.255.0';
   
   var dStart = d.dhcp_start || '10.51.31.10';
-  var dEnd = d.dhcp_end || '10.51.31.100';
-  document.getElementById('valDhcpPool').innerText = dStart + '  ➔  ' + dEnd + (currentLang === 'en' ? ' (Static)' : ' (Cố định)');
+  var dEnd = d.dhcp_end || '10.51.31.50';
+  document.getElementById('valDhcpPool').innerText = dStart + '  ➔  ' + dEnd;
 
   // Cập nhật trạng thái Max TX Power Boost
   var pBadge = document.getElementById('valPowerBadge');
@@ -1056,7 +1056,7 @@ function renderStatus(d) {
     document.getElementById('apIpInput').value = d.ap_ip || '';
     document.getElementById('apSubnetInput').value = d.ap_subnet || '255.255.255.0';
     document.getElementById('dhcpStartInput').value = d.dhcp_start || '10.51.31.10';
-    document.getElementById('dhcpEndInput').value = d.dhcp_end || '10.51.31.100';
+    document.getElementById('dhcpEndInput').value = d.dhcp_end || '10.51.31.50';
     if (d.ap_channel !== undefined) document.getElementById('apChannelSelect').value = d.ap_channel;
     apInputsInitialized = true;
   }
@@ -1369,8 +1369,14 @@ function validateDhcpForm(gw, sub, start, end) {
   if (gwNum >= startNum && gwNum <= endNum) {
     return currentLang === 'en' ? 'Gateway IP must not be inside the DHCP pool range!' : 'IP Gateway (' + gw + ') không được nằm bên trong dải cấp phát DHCP (' + start + ' -> ' + end + ')!';
   }
-  if (endNum - startNum + 1 < 2) {
+  var count = endNum - startNum + 1;
+  if (count < 2) {
     return currentLang === 'en' ? 'DHCP pool must have at least 2 IP addresses!' : 'Dải DHCP phải có ít nhất 2 địa chỉ IP!';
+  }
+  if (count >= 60) {
+    return currentLang === 'en'
+      ? 'DHCP pool range must be strictly less than 60 IP addresses (currently ' + count + ' IPs)! Please reduce the range.'
+      : 'Dải DHCP phải nhỏ hơn 60 địa chỉ IP (hiện tại có ' + count + ' IP)! Vui lòng rút ngắn dải IP.';
   }
   return '';
 }
@@ -1682,7 +1688,7 @@ function loadProfileToForm(silent) {
   document.getElementById('apIpInput').value = p.ip || '';
   document.getElementById('apSubnetInput').value = p.subnet || '';
   document.getElementById('dhcpStartInput').value = p.dhcp_start || '10.51.31.10';
-  document.getElementById('dhcpEndInput').value = p.dhcp_end || '10.51.31.200';
+  document.getElementById('dhcpEndInput').value = p.dhcp_end || '10.51.31.50';
   if (!silent) {
     alert((currentLang === 'en' ? 'Loaded parameters from preset "' : 'Đã nạp toàn bộ thông số của mẫu "') + p.name + '"!\n' + 
           (currentLang === 'en' ? 'You can edit below and click "Save Update" to update this preset.' : 'Bạn có thể chỉnh sửa bên dưới rồi bấm "Lưu Cập Nhật" để lưu lại vào mẫu này.'));
@@ -1734,7 +1740,7 @@ function updateSelectedProfile() {
   var ip = document.getElementById('apIpInput').value.trim();
   var subnet = document.getElementById('apSubnetInput').value.trim();
   var dStart = document.getElementById('dhcpStartInput').value.trim() || '10.51.31.10';
-  var dEnd = document.getElementById('dhcpEndInput').value.trim() || '10.51.31.200';
+  var dEnd = document.getElementById('dhcpEndInput').value.trim() || '10.51.31.50';
 
   var poolErr = validateDhcpForm(ip, subnet, dStart, dEnd);
   if (poolErr) {
@@ -1807,7 +1813,7 @@ function saveCurrentAsNewProfile() {
   var ip = document.getElementById('apIpInput').value.trim();
   var subnet = document.getElementById('apSubnetInput').value.trim();
   var dStart = document.getElementById('dhcpStartInput').value.trim() || '10.51.31.10';
-  var dEnd = document.getElementById('dhcpEndInput').value.trim() || '10.51.31.200';
+  var dEnd = document.getElementById('dhcpEndInput').value.trim() || '10.51.31.50';
 
   var poolErr = validateDhcpForm(ip, subnet, dStart, dEnd);
   if (poolErr) {

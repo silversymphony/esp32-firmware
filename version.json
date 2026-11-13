@@ -1,5 +1,5 @@
 {
   "version": "1.4.0",
   "url": "https://cdn.jsdelivr.net/gh/silversymphony/esp32-firmware@main/esp32_v1.4.0/esp32_v1.4.0.ino.bin",
-  "changelog": "Bản phát hành v1.4.0: Khôi phục cơ chế cấp IP ngẫu nhiên trong dải DHCP Pool; kiểm tra tính hợp lệ toàn diện của IP Gateway, Subnet Mask và dải DHCP; thông báo lỗi chi tiết khi dải IP sai quy cách; bổ sung hộp ghi chú hướng dẫn cấu hình DHCP Pool trực quan trên Web Portal."
+  "changelog": "Bản phát hành v1.4.0: Tuân thủ quy tắc dải DHCP pool < 60 IP và cấp phát IP ngẫu nhiên trong dải; tối ưu chuyển đổi 5G mạng nội bộ ổn định khi tắt Wi-Fi nguồn (tắt Option 3 Gateway và Option 6 DNS ở chế độ Offline); sửa dứt điểm lỗi nạp Flash OTA (hỗ trợ HTTP Chunked Streaming và chống Rollback phân vùng)."
 }

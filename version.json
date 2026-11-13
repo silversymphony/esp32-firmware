@@ -1,5 +1,5 @@
 {
   "version": "1.4.0",
   "url": "https://cdn.jsdelivr.net/gh/silversymphony/esp32-firmware@main/esp32_v1.4.0/esp32_v1.4.0.ino.bin",
-  "changelog": "Bản phát hành v1.4.0: Thay thế DHCP tuần tự bằng Custom Random DHCP Server (LwIP UDP 67) cấp phát IP ngẫu nhiên thực sự trong dải < 60 IP và từ chối IP cũ khi kết nối lại; bổ sung Smart Probe DNS + HTTP 204 (Offline 5G Mode) giúp điện thoại chuyển sang Poor network/5G ổn định; sửa dứt điểm lỗi Flash OTA (HTTP Chunked Streaming + chống Rollback)."
+  "changelog": "Bản phát hành v1.4.0: Custom Random DHCP Server (UDP 67) hỗ trợ đầy đủ Subnet /22 & < 60 IP; Smart Probe DNS + HTTP 204 & mDNS esp32.local khi dùng 5G; ưu tiên kết nối STA trước khi phát SoftAP (8s timeout); giải phóng RAM BLE & tạm ngắt SoftAP khi tải/ghi Flash OTA giúp nâng cấp ổn định."
 }

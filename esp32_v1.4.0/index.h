@@ -241,7 +241,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         <div style="width: 1px; background: var(--border);"></div>
         <div>
           <div class="info-label" id="lblFwVer">Firmware</div>
-          <div class="info-val" style="color: #fbbf24;" id="valFwVer">v1.4.0</div>
+          <div class="info-val" style="color: #fbbf24;" id="valFwVer">v1.3.9</div>
         </div>
         <div style="width: 1px; background: var(--border);"></div>
         <div>
@@ -467,7 +467,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
           <span>🚀</span>
           <span id="cardTitleOta" style="color: #a5b4fc;">Nâng Cấp Firmware Không Dây (GitHub OTA)</span>
         </span>
-        <span id="badgeFwVerOta" class="badge" style="background: rgba(99, 102, 241, 0.2); color: #c7d2fe; border: 1px solid rgba(99, 102, 241, 0.4);">v1.4.0</span>
+        <span id="badgeFwVerOta" class="badge" style="background: rgba(99, 102, 241, 0.2); color: #c7d2fe; border: 1px solid rgba(99, 102, 241, 0.4);">v1.3.9</span>
       </div>
 
       <div class="form-group">
@@ -581,7 +581,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
   <div class="footer">
     <div id="footerDesc">ESP32 NAPT Repeater Gateway • Built with Custom Random DHCP, BLE Security & GitHub OTA</div>
     <div style="margin-top: 5px; color: #9ca3af; font-size: 11px;">
-      <span id="footerFwLabel">Firmware:</span> <span id="footerFwVer" style="color: #fbbf24; font-weight: 700;">v1.4.0</span>
+      <span id="footerFwLabel">Firmware:</span> <span id="footerFwVer" style="color: #fbbf24; font-weight: 700;">v1.3.9</span>
     </div>
   </div>
 </div>
@@ -1576,6 +1576,9 @@ function startGithubOta() {
   progBox.classList.remove('hidden');
   pollingPaused = true;
 
+  var fwEl = document.getElementById('valFwVer');
+  var prevVer = fwEl ? fwEl.innerText.replace(/^v/i, '').trim() : '';
+
   var data = new URLSearchParams();
   data.append('bin_url', cachedBinUrl);
 
@@ -1586,35 +1589,93 @@ function startGithubOta() {
         alert((currentLang === 'en' ? 'OTA start failed: ' : 'Lỗi khởi động OTA: ') + (d.error || 'Unable to start'));
         btnRun.classList.remove('hidden');
         progBox.classList.add('hidden');
+        pollingPaused = false;
         return;
       }
 
-      var progress = 0;
-      var timer = setInterval(function() {
-        progress += 2;
-        if (progress > 95) progress = 95;
-        pBar.style.width = progress + '%';
-        pPct.innerText = progress + '%';
-        pTxt.innerText = (currentLang === 'en' ? 'Downloading firmware & flashing (' : 'Đang tải firmware & ghi Flash (') + progress + '%)...';
+      pBar.style.width = '15%';
+      pPct.innerText = '15%';
+      pTxt.innerText = currentLang === 'en'
+        ? 'ESP32 paused Wi-Fi AP to free RAM and is downloading & flashing firmware (30-60s)...'
+        : 'ESP32 đã tạm ngắt Wi-Fi AP để dồn RAM, đang tải & nạp Flash (30-60s)...';
 
-        if (progress >= 95) {
-          clearInterval(timer);
-          pTxt.innerText = currentLang === 'en' ? 'ESP32 finishing flash and rebooting...' : 'ESP32 đang hoàn tất ghi và khởi động lại...';
-          setTimeout(function() {
-            pBar.style.width = '100%';
-            pPct.innerText = '100%';
-            pTxt.innerText = currentLang === 'en' ? 'Reloading dashboard...' : 'Đang tải lại giao diện...';
-            setTimeout(function() {
-              location.reload();
-            }, 3000);
-          }, 8000);
+      var elapsed = 0;
+      var inFlight = false;
+      var pollTimer = setInterval(function() {
+        elapsed += 3000;
+        var simPct = Math.min(90, 15 + Math.floor((elapsed / 45000) * 75));
+        pBar.style.width = simPct + '%';
+        pPct.innerText = simPct + '%';
+
+        if (elapsed < 15000) {
+          pTxt.innerText = (currentLang === 'en'
+            ? 'Downloading & flashing firmware ('
+            : 'Đang tải firmware & ghi Flash (') + Math.floor(elapsed / 1000) + 's)...';
+          return;
         }
-      }, 500);
+
+        pTxt.innerText = (currentLang === 'en'
+          ? 'Waiting for ESP32 to finish reboot & reconnect ('
+          : 'Đang chờ ESP32 hoàn tất khởi động lại & kết nối lại (') + Math.floor(elapsed / 1000) + 's)...';
+
+        if (inFlight) return;
+        inFlight = true;
+
+        var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        var abortId = ctrl ? setTimeout(function() { ctrl.abort(); }, 2500) : null;
+        var fetchOpts = ctrl ? { signal: ctrl.signal } : {};
+
+        fetch('/api/status?t=' + Date.now(), fetchOpts)
+          .then(function(r) { return r.json(); })
+          .then(function(s) {
+            if (abortId) clearTimeout(abortId);
+            inFlight = false;
+            if (!s || !s.fw_ver) return;
+
+            clearInterval(pollTimer);
+            var curVer = String(s.fw_ver).trim();
+            if (prevVer && curVer !== prevVer) {
+              pBar.style.width = '100%';
+              pPct.innerText = '100%';
+              pTxt.innerText = (currentLang === 'en'
+                ? 'Upgrade successful to v' + curVer + '! Reloading...'
+                : 'Nâng cấp thành công lên v' + curVer + '! Đang tải lại giao diện...');
+              setTimeout(function() { location.reload(); }, 1800);
+            } else {
+              pBar.style.width = '0%';
+              pPct.innerText = '0%';
+              pTxt.innerText = (currentLang === 'en'
+                ? 'OTA failed (still on v' + curVer + '). Check [OTA-LOI] in Logs!'
+                : 'Cập nhật OTA thất bại (mạch vẫn đang ở v' + curVer + '). Xem [OTA-LOI] trong Nhật ký!');
+              btnRun.classList.remove('hidden');
+              pollingPaused = false;
+              if (typeof fetchLogs === 'function') fetchLogs();
+              alert(currentLang === 'en'
+                ? 'OTA update failed — device is still running v' + curVer + '. Please inspect System Logs ([OTA-LOI]).'
+                : 'Cập nhật OTA thất bại — thiết bị vẫn đang chạy v' + curVer + '. Vui lòng kiểm tra Nhật ký hệ thống ([OTA-LOI]).');
+            }
+          })
+          .catch(function() {
+            if (abortId) clearTimeout(abortId);
+            inFlight = false;
+          });
+
+        if (elapsed >= 90000) {
+          clearInterval(pollTimer);
+          pollingPaused = false;
+          btnRun.classList.remove('hidden');
+          pTxt.innerText = currentLang === 'en'
+            ? 'Timed out waiting for ESP32 (90s). Check Wi-Fi connection and refresh page.'
+            : 'Quá thời gian chờ ESP32 phản hồi (90s). Kiểm tra lại Wi-Fi AP và tải lại trang.';
+        }
+      }, 3000);
     })
     .catch(function(err) {
+      pollingPaused = false;
+      btnRun.classList.remove('hidden');
       alert(currentLang === 'en' 
-        ? 'Lost connection to ESP32 (Device may be flashing and rebooting). Please wait 15 seconds then refresh page.'
-        : 'Mất kết nối với ESP32 (Thiết bị có thể đang nạp Flash và khởi động lại). Vui lòng đợi 15 giây rồi tải lại trang.');
+        ? 'Connection lost before OTA confirmation. Wait 30-60s and refresh page to verify firmware version.'
+        : 'Mất kết nối khi gửi lệnh OTA. Vui lòng đợi 30-60 giây rồi tải lại trang để kiểm tra phiên bản.');
     });
 }
 

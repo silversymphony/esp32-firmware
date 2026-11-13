@@ -1612,6 +1612,7 @@ bool fetchOtaJson(const String &targetUrl, String &payloadOut, String &errOut) {
   client.setTimeout(15000);
 
   HTTPClient http;
+  http.useHTTP10(true); // Tranh Transfer-Encoding: chunked tren CDN (jsDelivr/Cloudflare) lam hong stream OTA
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   if (!http.begin(client, targetUrl)) {
     errOut = "Khong the khoi tao HTTPClient";
@@ -1780,6 +1781,7 @@ bool executeOtaDownload(const String &dlUrl) {
   client.setTimeout(30000);
 
   HTTPClient http;
+  http.useHTTP10(true); // Tranh Transfer-Encoding: chunked tren CDN (jsDelivr/Cloudflare) lam hong stream OTA
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   if (!http.begin(client, dlUrl)) {
     logMessage("[OTA-LOI] Khong the khoi tao ket noi tai firmware!");
@@ -4064,19 +4066,15 @@ void setup() {
   if (installed_ver != FIRMWARE_VERSION) {
     logPrintf("[UPGRADE] Khoi tao phien ban: v%s (Ban cu: %s).", FIRMWARE_VERSION.c_str(), installed_ver.length() > 0 ? installed_ver.c_str() : "None");
     prefs.putString("fw_ver", FIRMWARE_VERSION);
-    // Khi nap firmware moi lan dau: mac dinh luon de trong Wi-Fi nguon, tat Wi-Fi nguon
-    prefs.remove("sta_ssid");
-    prefs.remove("sta_pass");
-    prefs.putBool("sta_en", false);
-
-    // Chuyen doi ma PIN cu 70213 sang ma PIN mac dinh moi 123456 mot lan duy nhat khi nang cap
-    uint32_t current_pin = prefs.getUInt("ble_pin", 123456);
-    if (current_pin == 70213) {
-      prefs.putUInt("ble_pin", 123456);
-      logMessage("[UPGRADE] Da cap nhat ma PIN BLE mac dinh moi: 123456");
+    if (installed_ver.length() == 0) {
+      // Lan dau nap len NVS trang: mac dinh de trong Wi-Fi nguon (tat STA de dung 5G offline)
+      prefs.remove("sta_ssid");
+      prefs.remove("sta_pass");
+      prefs.putBool("sta_en", false);
+      logMessage("[INIT] Mac dinh Wi-Fi nguon: DE TRONG (Tat Wi-Fi nguon). Chi luu khi ket noi lan dau thanh cong!");
+    } else {
+      logMessage("[UPGRADE] Giu nguyen cau hinh Wi-Fi nguon (STA) va ma PIN BLE sau khi nang cap.");
     }
-
-    logMessage("[INIT] Mac dinh Wi-Fi nguon: DE TRONG (Tat Wi-Fi nguon). Chi luu khi ket noi lan dau thanh cong!");
   }
 
   sta_enabled    = prefs.getBool("sta_en", false); // Mặc định lần đầu là FALSE (Tắt Wi-Fi nguồn)

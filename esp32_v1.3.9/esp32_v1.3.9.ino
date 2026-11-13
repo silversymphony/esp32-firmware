@@ -194,6 +194,7 @@ struct CustomDhcpLease {
   bool     used;
   bool     active;
   bool     confirmed;
+  bool     is_apple;
   uint8_t  mac[6];
   uint32_t ip_u32;
   uint32_t last_ip_u32;
@@ -204,6 +205,7 @@ struct CustomDhcpLease {
 
 struct CustomDhcpConfig {
   bool     enabled;
+  bool     offline_5g_mode;
   uint32_t start_u32;
   uint32_t end_u32;
   uint32_t gw_u32;
@@ -267,6 +269,7 @@ void syncDnsServerMode(bool forceStop = false);
 void handleDnsUdp();
 void flushCustomDhcpLogs();
 void releaseCustomDhcpLease(const uint8_t *mac);
+bool isClientIn5GGraceWindow(uint32_t ip_u32);
 void startDnsProxy();
 void stopDnsProxy();
 void handleDnsProxy();
@@ -2098,6 +2101,7 @@ static bool isProbeHostname(const String &host) {
     "wifi.heytap.com",
     "captive.heytap.com",
     "wifi.vivo.com.cn",
+    "connectivitycheck.vivo.com.cn",
     "hicloud.com",
     "connectivity.samsung.com",
     "cloudfront.net",
@@ -2168,7 +2172,7 @@ void syncDnsServerMode(bool forceStop) {
   if (dns_mode == DNS_MODE_CAPTIVE) {
     logMessage("[CAPTIVE] Da khoi chay Captive DNS Server (Cho nhap Wi-Fi).");
   } else {
-    logMessage("[5G-DNS] Bat Smart Probe DNS cong 53 (Probe->GW TTL=2s | Real->SERVFAIL).");
+    logMessage("[5G-DNS] Bat Smart Probe DNS cong 53 (4.5s Grace TTL=1s -> Sau do SERVFAIL kich hoat Poor network/5G).");
   }
 }
 
@@ -2237,15 +2241,18 @@ void handleDnsUdp() {
       rcode = 0;
       answerA = (qclass == 1 && (qtype == 1 || qtype == 255));
     } else {
-      if (isProbeHostname(qname)) {
-        ttlSec = 2;
+      bool isLocalName = hostMatchesDomain(qname, "esp32.local");
+      bool inGrace = isLocalName || isClientIn5GGraceWindow(ipToU32(dnsUdp.remoteIP()));
+      if (isLocalName || (isProbeHostname(qname) && inGrace)) {
+        ttlSec = 1;
         rcode = 0;
         answerA = (qclass == 1 && (qtype == 1 || qtype == 255));
-        logDnsProbeThrottled(qname, qtype, answerA ? ap_ip_str.c_str() : "NODATA");
+        String act = answerA ? (ap_ip_str + "(GRACE)") : String("NODATA");
+        logDnsProbeThrottled(qname, qtype, act.c_str());
       } else {
         rcode = 2; // SERVFAIL (tranh bi cache NXDOMAIN khi chuyen 5G)
         answerA = false;
-        logDnsProbeThrottled(qname, qtype, "SERVFAIL");
+        logDnsProbeThrottled(qname, qtype, isProbeHostname(qname) ? "SERVFAIL(5G)" : "SERVFAIL");
       }
     }
 
@@ -2287,11 +2294,28 @@ void handleDnsUdp() {
 
 static portMUX_TYPE g_dhcpMux = portMUX_INITIALIZER_UNLOCKED;
 static struct udp_pcb *g_dhcpPcb = NULL;
-static CustomDhcpConfig g_dhcpCfg = {false, 0, 0, 0, 0, 0, 0, true, true};
+static CustomDhcpConfig g_dhcpCfg = {false, false, 0, 0, 0, 0, 0, 0, true, true};
 static CustomDhcpLease g_dhcpLeases[MAX_CUSTOM_DHCP_LEASES];
 static char g_dhcpLogRing[DHCP_LOG_RING_SIZE][192];
 static uint8_t g_dhcpLogHead = 0;
 static uint8_t g_dhcpLogTail = 0;
+
+bool isClientIn5GGraceWindow(uint32_t ip_u32) {
+  if (ip_u32 == 0) return false;
+  uint32_t now_ms = millis();
+  bool inGrace = false;
+  portENTER_CRITICAL(&g_dhcpMux);
+  for (int i = 0; i < MAX_CUSTOM_DHCP_LEASES; i++) {
+    if (g_dhcpLeases[i].used && g_dhcpLeases[i].active && g_dhcpLeases[i].ip_u32 == ip_u32) {
+      if ((uint32_t)(now_ms - g_dhcpLeases[i].start_ms) < 4500UL) {
+        inGrace = true;
+      }
+      break;
+    }
+  }
+  portEXIT_CRITICAL(&g_dhcpMux);
+  return inGrace;
+}
 
 static void customDhcpPushLog(const char *fmt, ...) {
   char buf[192];
@@ -2451,7 +2475,7 @@ static bool appendOptU32(uint8_t *opts, size_t maxLen, size_t *idx, uint8_t code
 
 static void customDhcpSendReply(struct udp_pcb *pcb, struct netif *lwip_ap,
                                 const CustomDhcpPacket *rx, const CustomDhcpConfig *cfg,
-                                uint8_t msgType, uint32_t yiaddr_u32) {
+                                uint8_t msgType, uint32_t yiaddr_u32, bool omitRouterDns) {
   if (pcb == NULL || lwip_ap == NULL) return;
 
   CustomDhcpPacket tx;
@@ -2479,10 +2503,10 @@ static void customDhcpSendReply(struct udp_pcb *pcb, struct netif *lwip_ap,
     appendOptU32(tx.options, sizeof(tx.options), &optIdx, 58, 1800U); // T1
     appendOptU32(tx.options, sizeof(tx.options), &optIdx, 59, 3150U); // T2
     appendOptU32(tx.options, sizeof(tx.options), &optIdx, 1, cfg->mask_u32);
-    if (cfg->offer_router) {
+    if (!omitRouterDns && cfg->offer_router) {
       appendOptU32(tx.options, sizeof(tx.options), &optIdx, 3, cfg->gw_u32);
     }
-    if (cfg->offer_dns && cfg->dns1_u32 != 0) {
+    if (!omitRouterDns && cfg->offer_dns && cfg->dns1_u32 != 0) {
       uint32_t dnsArr[2];
       dnsArr[0] = lwip_htonl(cfg->dns1_u32);
       if (cfg->dns2_u32 != 0 && cfg->dns2_u32 != cfg->dns1_u32) {
@@ -2546,7 +2570,10 @@ static void customDhcpRecvCb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
   bool hasSrvId = false;
   char hostName[32] = {0};
   char vendorCls[32] = {0};
+  char opt55Str[40] = {0};
   bool wantsOpt114 = false;
+  bool hasOpt119 = false;
+  bool hasOpt252 = false;
 
   size_t optsLen = (copyLen > 240) ? (size_t)(copyLen - 240) : 0;
   if (optsLen > sizeof(rx.options)) optsLen = sizeof(rx.options);
@@ -2585,12 +2612,23 @@ static void customDhcpRecvCb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
       }
       vendorCls[n] = '\0';
     } else if (code == 55) {
+      size_t p55 = 0;
       for (size_t k = 0; k < olen; k++) {
-        if (rx.options[i + k] == 114) wantsOpt114 = true;
+        uint8_t pcode = rx.options[i + k];
+        if (pcode == 114) wantsOpt114 = true;
+        if (pcode == 119) hasOpt119 = true;
+        if (pcode == 252) hasOpt252 = true;
+        if (p55 + 4 < sizeof(opt55Str)) {
+          p55 += (size_t)snprintf(&opt55Str[p55], sizeof(opt55Str) - p55, "%s%u", k ? "," : "", pcode);
+        }
       }
     }
     i += olen;
   }
+
+  bool isAppleClient = (strcasestr(hostName, "iPhone") != NULL || strcasestr(hostName, "iPad") != NULL ||
+                        strcasestr(hostName, "iPod") != NULL || strcasestr(hostName, "Mac") != NULL ||
+                        (vendorCls[0] == '\0' && hasOpt119 && hasOpt252));
 
   CustomDhcpConfig cfg;
   portENTER_CRITICAL(&g_dhcpMux);
@@ -2615,6 +2653,7 @@ static void customDhcpRecvCb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
     portENTER_CRITICAL(&g_dhcpMux);
     int slot = findOrAllocLeaseSlotLocked(rx.chaddr, now_ms);
     CustomDhcpLease &L = g_dhcpLeases[slot];
+    if (isAppleClient) L.is_apple = true;
     if (L.active && L.ip_u32 >= cfg.start_u32 && L.ip_u32 <= cfg.end_u32 &&
         L.ip_u32 != cfg.gw_u32 && (uint32_t)(now_ms - L.start_ms) < L.ttl_ms) {
       chosenIp = L.ip_u32;
@@ -2628,14 +2667,16 @@ static void customDhcpRecvCb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
         L.ttl_ms = 30000UL; // Giu cho OFFER 30 giay
       }
     }
+    bool omitForClient = (cfg.offline_5g_mode && L.is_apple);
     portEXIT_CRITICAL(&g_dhcpMux);
 
     if (chosenIp != 0) {
       char ipBuf[16];
       u32ToStrBuf(chosenIp, ipBuf, sizeof(ipBuf));
-      customDhcpSendReply(pcb, lwip_ap, &rx, &cfg, 2, chosenIp); // DHCPOFFER
-      customDhcpPushLog("[DHCP-OFFER] %s | MAC:%s | Host:%s | Vendor:%s | Opt114:%d",
-                        ipBuf, macStr, hostName[0] ? hostName : "-", vendorCls[0] ? vendorCls : "-", wantsOpt114 ? 1 : 0);
+      customDhcpSendReply(pcb, lwip_ap, &rx, &cfg, 2, chosenIp, omitForClient); // DHCPOFFER
+      customDhcpPushLog("[DHCP-OFFER] %s | MAC:%s | Host:%s | Opt55:%s | %s",
+                        ipBuf, macStr, hostName[0] ? hostName : "-",
+                        opt55Str[0] ? opt55Str : "-", omitForClient ? "Apple-NoGW" : "Full-GW/DNS");
     }
   } else if (msgType == 3) { // DHCPREQUEST
     if (hasSrvId && srvId != cfg.gw_u32) return; // Danh cho DHCP server khac
@@ -2643,10 +2684,13 @@ static void customDhcpRecvCb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
     uint32_t ciaddrHost = lwip_ntohl(rx.ciaddr);
     uint32_t targetIp = hasReqIp ? reqIp : ciaddrHost;
     bool valid = false;
+    bool omitForClient = false;
 
     portENTER_CRITICAL(&g_dhcpMux);
     int slot = findOrAllocLeaseSlotLocked(rx.chaddr, now_ms);
     CustomDhcpLease &L = g_dhcpLeases[slot];
+    if (isAppleClient) L.is_apple = true;
+    omitForClient = (cfg.offline_5g_mode && L.is_apple);
     if (targetIp != 0 && targetIp >= cfg.start_u32 && targetIp <= cfg.end_u32 && targetIp != cfg.gw_u32 &&
         L.active && L.ip_u32 == targetIp) {
       L.confirmed = true;
@@ -2660,11 +2704,12 @@ static void customDhcpRecvCb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
     char ipBuf[16];
     u32ToStrBuf(targetIp, ipBuf, sizeof(ipBuf));
     if (valid) {
-      customDhcpSendReply(pcb, lwip_ap, &rx, &cfg, 5, targetIp); // DHCPACK
-      customDhcpPushLog("[WIFI-AP] Da cap IP ngau nhien: %s cho %s (Host:%s) thanh cong!",
-                        ipBuf, macStr, hostName[0] ? hostName : "-");
+      customDhcpSendReply(pcb, lwip_ap, &rx, &cfg, 5, targetIp, omitForClient); // DHCPACK
+      customDhcpPushLog("[WIFI-AP] Da cap IP ngau nhien: %s cho %s (Host:%s | %s) thanh cong!",
+                        ipBuf, macStr, hostName[0] ? hostName : "-",
+                        omitForClient ? "5G-NoGW" : "5G-Probe4.5s");
     } else {
-      customDhcpSendReply(pcb, lwip_ap, &rx, &cfg, 6, 0); // DHCPNAK -> Ep DHCPDISCOVER cap IP ngau nhien
+      customDhcpSendReply(pcb, lwip_ap, &rx, &cfg, 6, 0, false); // DHCPNAK -> Ep DHCPDISCOVER cap IP ngau nhien
       customDhcpPushLog("[DHCP-NAK] MAC:%s xin IP cu %s -> Tu choi (NAK) de cap IP ngau nhien moi!",
                         macStr, ipBuf);
     }
@@ -2783,6 +2828,7 @@ void configureSoftApDhcp(bool resetOutOfRangeLeases) {
 
   portENTER_CRITICAL(&g_dhcpMux);
   g_dhcpCfg.enabled = true;
+  g_dhcpCfg.offline_5g_mode = (!sta_enabled && !has_uplink);
   g_dhcpCfg.start_u32 = s_u32;
   g_dhcpCfg.end_u32 = e_u32;
   g_dhcpCfg.gw_u32 = ipToU32(gw_ip);
@@ -2953,18 +2999,16 @@ void handleCaptiveRedirect() {
   String host = server.hostHeader();
   String ua = server.hasHeader("User-Agent") ? server.header("User-Agent") : "";
   bool isLocalHost = (host.length() == 0 || host == ap_ip_str || host == WiFi.localIP().toString() || host.indexOf("esp32.local") >= 0);
+  bool isProbeUri = (uri.indexOf("generate_204") >= 0 || uri.indexOf("gen_204") >= 0 ||
+                     uri.indexOf("hotspot-detect") >= 0 || uri.indexOf("connecttest") >= 0 ||
+                     uri.indexOf("ncsi") >= 0 || uri.indexOf("success.txt") >= 0);
 
-  // 1. Khi CÓ kết nối Internet Wi-Fi nguồn HOẶC ở chế độ Offline 5G:
-  // Phản hồi 204/Success cho HTTP probe (trong khi HTTPS:443 từ chối -> Android nhận Partial/Poor network & giữ 5G, không khóa "No internet")
-  if ((sta_enabled && WiFi.status() == WL_CONNECTED) || !sta_enabled) {
-    if (!isLocalHost || uri.indexOf("generate_204") >= 0 || uri.indexOf("gen_204") >= 0 || uri.indexOf("hotspot-detect") >= 0) {
-      if (trySendProbeSuccessResponse(uri, host)) {
-        if (!sta_enabled) logHttpProbeThrottled(host, uri, ua, (uri.indexOf("204") >= 0 || host.indexOf("gstatic") >= 0 || host.indexOf("google") >= 0 || host.indexOf("miui") >= 0) ? 204 : 200);
-        return;
-      }
+  // 1. Khi CÓ kết nối Internet Wi-Fi nguồn: tra 204/Success binh thuong
+  if (sta_enabled && WiFi.status() == WL_CONNECTED) {
+    if (!isLocalHost || isProbeUri) {
+      if (trySendProbeSuccessResponse(uri, host)) return;
     }
     if (!isLocalHost) {
-      if (!sta_enabled) logHttpProbeThrottled(host, uri, ua, 404);
       server.send(404, "text/plain", "Not Found");
       return;
     }
@@ -2972,7 +3016,26 @@ void handleCaptiveRedirect() {
     return;
   }
 
-  // 2. Khi đang bật Wi-Fi nguồn nhưng CHƯA có mạng (chờ cấu hình): chuyển hướng về Web Portal để mở Captive Portal
+  // 2. Khi TẮT Wi-Fi nguồn (Offline 5G):
+  // - Trong 4.5s dau sau DHCPACK (Grace Window): tra 204/200 de dien thoai khong bi khoa "No internet"
+  // - Sau 4.5s: ngat ket noi probe (TCP stop) giong het luc tat STA giua chung -> kich hoat "Poor network" -> 5G!
+  if (!sta_enabled) {
+    if (!isLocalHost || isProbeUri) {
+      bool inGrace = isClientIn5GGraceWindow(ipToU32(server.client().remoteIP()));
+      if (inGrace && trySendProbeSuccessResponse(uri, host)) {
+        bool isAppleHtml = (uri.indexOf("hotspot-detect") >= 0 || uri.indexOf("success.html") >= 0 || uri.indexOf("canonical") >= 0 || host.indexOf("apple") >= 0);
+        logHttpProbeThrottled(host, uri, ua, isAppleHtml ? 200 : 204);
+        return;
+      }
+      logHttpProbeThrottled(host, uri, ua, 0);
+      server.client().stop(); // Drop TCP socket khong phan hoi (mo phong mat Internet sau khi da ket noi)
+      return;
+    }
+    handleRoot();
+    return;
+  }
+
+  // 3. Khi đang bật Wi-Fi nguồn nhưng CHƯA có mạng (chờ cấu hình): chuyển hướng về Web Portal để mở Captive Portal
   if (!isLocalHost) {
     server.sendHeader("Location", String("http://") + ap_ip_str + "/", true);
     server.send(302, "text/plain", "");

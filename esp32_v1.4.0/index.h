@@ -426,7 +426,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       </div>
 
       <div class="info-box" style="margin-bottom: 12px;">
-        <label id="lblInputDhcp" style="color: #cbd5e1; margin-bottom: 6px;">Dải Cấp IP Tự Động (DHCP Cố Định)</label>
+        <label id="lblInputDhcp" style="color: #cbd5e1; margin-bottom: 6px;">🎲 Dải Cấp IP Tự Động (DHCP Pool Ngẫu Nhiên)</label>
         <div class="grid-2">
           <div>
             <span id="lblDhcpStart" style="font-size: 10px; color: var(--text-muted);">Bắt đầu:</span>
@@ -434,7 +434,20 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
           </div>
           <div>
             <span id="lblDhcpEnd" style="font-size: 10px; color: var(--text-muted);">Kết thúc:</span>
-            <input type="text" id="dhcpEndInput" placeholder="10.51.31.100">
+            <input type="text" id="dhcpEndInput" placeholder="10.51.31.200">
+          </div>
+        </div>
+
+        <div id="dhcpHelpBox" style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: 8px; padding: 10px 12px; margin-top: 10px; font-size: 11px; line-height: 1.5; color: #cbd5e1;">
+          <div style="font-weight: 600; color: #38bdf8; margin-bottom: 5px; display: flex; align-items: center; gap: 4px;">
+            <span>ℹ️</span> <span id="lblDhcpNotesTitle">Ghi chú & Quy tắc cấu hình DHCP Pool:</span>
+          </div>
+          <div id="lblDhcpNotesContent">
+            • <b>Cùng lớp mạng:</b> IP Bắt đầu và Kết thúc phải cùng Subnet với Gateway IP (Ví dụ Gateway <code>10.51.31.254</code> thì dải IP phải là <code>10.51.31.x</code>).<br>
+            • <b>Thứ tự IP:</b> IP Bắt đầu phải nhỏ hơn hoặc bằng IP Kết thúc (Không chứa địa chỉ mạng <code>.0</code> và broadcast <code>.255</code>).<br>
+            • <b>Tránh trùng Gateway:</b> IP Gateway không được nằm trong dải IP DHCP để tránh xung đột địa chỉ IP.<br>
+            • <b>Cấp IP ngẫu nhiên:</b> Hệ thống tự động chọn ngẫu nhiên một cửa sổ IP trong tổng dải pool này mỗi khi toàn bộ thiết bị ngắt kết nối, giúp tăng tính bảo mật và ẩn danh thiết bị.<br>
+            • <b>Khởi động lại:</b> Khi lưu cài đặt, ESP32 sẽ tự khởi động lại để áp dụng dải IP mới.
           </div>
         </div>
       </div>
@@ -677,9 +690,11 @@ var I18N = {
     lblInputApBssid: "Địa Chỉ BSSID (MAC)",
     lblInputApIp: "IP Gateway (Cổng ESP32)",
     lblInputApSubnet: "Subnet Mask",
-    lblInputDhcp: "Dải Cấp IP Tự Động (DHCP Cố Định)",
+    lblInputDhcp: "🎲 Dải Cấp IP Tự Động (DHCP Pool Ngẫu Nhiên)",
     lblDhcpStart: "Bắt đầu:",
     lblDhcpEnd: "Kết thúc:",
+    lblDhcpNotesTitle: "Ghi chú & Quy tắc cấu hình DHCP Pool:",
+    lblDhcpNotesContent: "• <b>Cùng lớp mạng:</b> IP Bắt đầu và Kết thúc phải cùng Subnet với Gateway IP (Ví dụ Gateway <code>10.51.31.254</code> thì dải IP phải là <code>10.51.31.x</code>).<br>• <b>Thứ tự IP:</b> IP Bắt đầu phải nhỏ hơn hoặc bằng IP Kết thúc (Không chứa địa chỉ mạng <code>.0</code> và broadcast <code>.255</code>).<br>• <b>Tránh trùng Gateway:</b> IP Gateway không được nằm trong dải IP DHCP để tránh xung đột địa chỉ IP.<br>• <b>Cấp IP ngẫu nhiên:</b> Hệ thống tự động chọn ngẫu nhiên một cửa sổ IP trong tổng dải pool này mỗi khi toàn bộ thiết bị ngắt kết nối, giúp tăng tính bảo mật và ẩn danh thiết bị.<br>• <b>Khởi động lại:</b> Khi lưu cài đặt, ESP32 sẽ tự khởi động lại để áp dụng dải IP mới.",
     noticeDhcp: "🔒 Cấu hình dải IP cấp phát cho các thiết bị kết nối vào mạng Wi-Fi phát.",
     btnSaveAp: "💾 Lưu Tham Số & Khởi Động Lại AP",
     btnRebootText: "Khởi Động Lại ESP32",
@@ -766,9 +781,11 @@ var I18N = {
     lblInputApBssid: "BSSID Address (MAC)",
     lblInputApIp: "Gateway IP (ESP32)",
     lblInputApSubnet: "Subnet Mask",
-    lblInputDhcp: "DHCP IP Pool (Static Range)",
+    lblInputDhcp: "🎲 Automatic IP Pool (Random DHCP Pool)",
     lblDhcpStart: "Start:",
     lblDhcpEnd: "End:",
+    lblDhcpNotesTitle: "Rules & Notes for DHCP Pool Configuration:",
+    lblDhcpNotesContent: "• <b>Same Subnet:</b> Start and End IP must be in the same subnet as Gateway (e.g. Gateway <code>10.51.31.254</code> requires <code>10.51.31.x</code>).<br>• <b>IP Order:</b> Start IP must be less than or equal to End IP (Cannot use network address <code>.0</code> or broadcast <code>.255</code>).<br>• <b>No Gateway Conflict:</b> Gateway IP cannot be inside the DHCP range to avoid IP conflicts.<br>• <b>Random Allocation:</b> ESP32 automatically picks a random active IP sub-window within this configured pool whenever all devices disconnect, boosting privacy.<br>• <b>Reboot:</b> Saving parameters will restart ESP32 to apply the new IP pool.",
     noticeDhcp: "🔒 Configured IP address range allocated to clients connected to SoftAP.",
     btnSaveAp: "💾 Save Parameters & Restart AP",
     btnRebootText: "Reboot ESP32",
@@ -1307,6 +1324,57 @@ function forgetSta() {
     .catch(function(err) { alert(currentLang === 'en' ? 'Request error!' : 'Lỗi khi gửi yêu cầu!'); });
 }
 
+function validateDhcpForm(gw, sub, start, end) {
+  function isIpv4(ip) {
+    if (!ip) return false;
+    var p = ip.trim().split('.');
+    if (p.length !== 4) return false;
+    for (var i = 0; i < 4; i++) {
+      if (p[i] === '' || isNaN(p[i])) return false;
+      var n = Number(p[i]);
+      if (n < 0 || n > 255) return false;
+    }
+    return true;
+  }
+  function ip2num(ip) {
+    return ip.trim().split('.').reduce(function(acc, oct) { return ((acc << 8) + Number(oct)) >>> 0; }, 0);
+  }
+
+  if (!isIpv4(gw)) return currentLang === 'en' ? 'Invalid Gateway IP address!' : 'Địa chỉ IP Gateway không hợp lệ!';
+  if (!isIpv4(sub)) return currentLang === 'en' ? 'Invalid Subnet Mask!' : 'Subnet Mask không hợp lệ!';
+  if (!isIpv4(start)) return currentLang === 'en' ? 'Invalid DHCP Start IP!' : 'IP bắt đầu DHCP không hợp lệ!';
+  if (!isIpv4(end)) return currentLang === 'en' ? 'Invalid DHCP End IP!' : 'IP kết thúc DHCP không hợp lệ!';
+
+  var gwNum = ip2num(gw);
+  var subNum = ip2num(sub);
+  var startNum = ip2num(start);
+  var endNum = ip2num(end);
+  var invSub = (~subNum) >>> 0;
+
+  if ((startNum & subNum) !== (gwNum & subNum)) {
+    return currentLang === 'en' ? 'DHCP Start IP must be in the same subnet as Gateway!' : 'IP bắt đầu DHCP (' + start + ') không cùng lớp mạng với Gateway (' + gw + ')!';
+  }
+  if ((endNum & subNum) !== (gwNum & subNum)) {
+    return currentLang === 'en' ? 'DHCP End IP must be in the same subnet as Gateway!' : 'IP kết thúc DHCP (' + end + ') không cùng lớp mạng với Gateway (' + gw + ')!';
+  }
+  if (startNum > endNum) {
+    return currentLang === 'en' ? 'DHCP Start IP must be less than or equal to End IP!' : 'IP bắt đầu DHCP (' + start + ') phải nhỏ hơn hoặc bằng IP kết thúc (' + end + ')!';
+  }
+  if ((startNum & invSub) === 0 || (endNum & invSub) === 0) {
+    return currentLang === 'en' ? 'DHCP range cannot contain the network address (.0)!' : 'Dải DHCP không được chứa địa chỉ mạng (.0)!';
+  }
+  if ((startNum & invSub) === invSub || (endNum & invSub) === invSub) {
+    return currentLang === 'en' ? 'DHCP range cannot contain the broadcast address (.255)!' : 'Dải DHCP không được chứa địa chỉ quảng bá (.255)!';
+  }
+  if (gwNum >= startNum && gwNum <= endNum) {
+    return currentLang === 'en' ? 'Gateway IP must not be inside the DHCP pool range!' : 'IP Gateway (' + gw + ') không được nằm bên trong dải cấp phát DHCP (' + start + ' -> ' + end + ')!';
+  }
+  if (endNum - startNum + 1 < 2) {
+    return currentLang === 'en' ? 'DHCP pool must have at least 2 IP addresses!' : 'Dải DHCP phải có ít nhất 2 địa chỉ IP!';
+  }
+  return '';
+}
+
 function saveAp() {
   var ssid = document.getElementById('apSsidInput').value.trim();
   var pass = document.getElementById('apPassInput').value;
@@ -1319,6 +1387,27 @@ function saveAp() {
 
   if (!ssid || !ip || !subnet) {
     alert(currentLang === 'en' ? 'Please fill in all required fields!' : 'Vui lòng điền đầy đủ các trường bắt buộc!');
+    return;
+  }
+
+  if (ssid.length > 32) {
+    alert(currentLang === 'en' ? 'Wi-Fi SSID cannot exceed 32 characters!' : 'Tên Wi-Fi (SSID) không được vượt quá 32 ký tự!');
+    return;
+  }
+
+  if (pass.length > 0 && pass.length < 8) {
+    alert(currentLang === 'en' ? 'Wi-Fi password (WPA2) must be at least 8 characters (or empty for open network)!' : 'Mật khẩu Wi-Fi (WPA2) phải có ít nhất 8 ký tự (hoặc để trống nếu là mạng mở)!');
+    return;
+  }
+
+  if (pass.length > 63) {
+    alert(currentLang === 'en' ? 'Wi-Fi password cannot exceed 63 characters!' : 'Mật khẩu Wi-Fi không được vượt quá 63 ký tự!');
+    return;
+  }
+
+  var poolErr = validateDhcpForm(ip, subnet, start, end);
+  if (poolErr) {
+    alert(poolErr);
     return;
   }
 
@@ -1338,12 +1427,19 @@ function saveAp() {
   data.append('dhcp_end', end);
 
   fetch('/api/save_ap', { method: 'POST', body: data })
-    .then(function(res) { return res.json(); })
+    .then(function(res) {
+      return res.json().then(function(d) {
+        if (!res.ok) {
+          throw new Error(d.error || (currentLang === 'en' ? 'Configuration error!' : 'Lỗi cấu hình!'));
+        }
+        return d;
+      });
+    })
     .then(function(d) {
       showToast(d.msg || (currentLang === 'en' ? 'SoftAP parameters saved! ESP32 restarting...' : 'Đã lưu cấu hình mạng phát! ESP32 đang khởi động lại...'));
       showRebootOverlay();
     })
-    .catch(function(err) { alert(currentLang === 'en' ? 'Error saving SoftAP parameters!' : 'Lỗi khi lưu tham số AP!'); });
+    .catch(function(err) { alert(err.message || (currentLang === 'en' ? 'Error saving SoftAP parameters!' : 'Lỗi khi lưu tham số AP!')); });
 }
 
 var cachedBinUrl = '';
@@ -1629,18 +1725,34 @@ function updateSelectedProfile() {
     alert(currentLang === 'en' ? 'SSID cannot be empty!' : 'Tên Wi-Fi (SSID) không được để trống!');
     return;
   }
+  var pass = document.getElementById('apPassInput').value;
+  if (pass.length > 0 && pass.length < 8) {
+    alert(currentLang === 'en' ? 'Wi-Fi password (WPA2) must be at least 8 characters (or empty for open network)!' : 'Mật khẩu Wi-Fi (WPA2) phải có ít nhất 8 ký tự (hoặc để trống nếu là mạng mở)!');
+    return;
+  }
+
+  var ip = document.getElementById('apIpInput').value.trim();
+  var subnet = document.getElementById('apSubnetInput').value.trim();
+  var dStart = document.getElementById('dhcpStartInput').value.trim() || '10.51.31.10';
+  var dEnd = document.getElementById('dhcpEndInput').value.trim() || '10.51.31.200';
+
+  var poolErr = validateDhcpForm(ip, subnet, dStart, dEnd);
+  if (poolErr) {
+    alert(poolErr);
+    return;
+  }
 
   var data = new URLSearchParams();
   data.append('id', p.id);
   data.append('name', updatedName);
   data.append('ssid', ssid);
-  data.append('pass', document.getElementById('apPassInput').value);
+  data.append('pass', pass);
   data.append('channel', document.getElementById('apChannelSelect').value);
   data.append('bssid', document.getElementById('apBssidInput').value);
-  data.append('ip', document.getElementById('apIpInput').value);
-  data.append('subnet', document.getElementById('apSubnetInput').value);
-  data.append('dhcp_start', document.getElementById('dhcpStartInput').value || '10.51.31.10');
-  data.append('dhcp_end', document.getElementById('dhcpEndInput').value || '10.51.31.200');
+  data.append('ip', ip);
+  data.append('subnet', subnet);
+  data.append('dhcp_start', dStart);
+  data.append('dhcp_end', dEnd);
 
   fetch('/api/save_profile', { method: 'POST', body: data })
     .then(function(res) { return res.json(); })
@@ -1684,19 +1796,35 @@ function saveCurrentAsNewProfile() {
     alert(currentLang === 'en' ? 'Please enter SoftAP SSID in form first!' : 'Vui lòng nhập Tên Wi-Fi (SSID) trong form trước!');
     return;
   }
+  var pass = document.getElementById('apPassInput').value;
+  if (pass.length > 0 && pass.length < 8) {
+    alert(currentLang === 'en' ? 'Wi-Fi password (WPA2) must be at least 8 characters (or empty for open network)!' : 'Mật khẩu Wi-Fi (WPA2) phải có ít nhất 8 ký tự (hoặc để trống nếu là mạng mở)!');
+    return;
+  }
   var nameInp = document.getElementById('presetNameInput');
   var name = (nameInp && nameInp.value.trim().length > 0) ? nameInp.value.trim() : (ssid + ' (Preset ' + (savedProfiles.length + 1) + ')');
+
+  var ip = document.getElementById('apIpInput').value.trim();
+  var subnet = document.getElementById('apSubnetInput').value.trim();
+  var dStart = document.getElementById('dhcpStartInput').value.trim() || '10.51.31.10';
+  var dEnd = document.getElementById('dhcpEndInput').value.trim() || '10.51.31.200';
+
+  var poolErr = validateDhcpForm(ip, subnet, dStart, dEnd);
+  if (poolErr) {
+    alert(poolErr);
+    return;
+  }
 
   var data = new URLSearchParams();
   data.append('name', name);
   data.append('ssid', ssid);
-  data.append('pass', document.getElementById('apPassInput').value);
+  data.append('pass', pass);
   data.append('channel', document.getElementById('apChannelSelect').value);
   data.append('bssid', document.getElementById('apBssidInput').value);
-  data.append('ip', document.getElementById('apIpInput').value);
-  data.append('subnet', document.getElementById('apSubnetInput').value);
-  data.append('dhcp_start', document.getElementById('dhcpStartInput').value || '10.51.31.10');
-  data.append('dhcp_end', document.getElementById('dhcpEndInput').value || '10.51.31.200');
+  data.append('ip', ip);
+  data.append('subnet', subnet);
+  data.append('dhcp_start', dStart);
+  data.append('dhcp_end', dEnd);
 
   fetch('/api/save_profile', { method: 'POST', body: data })
     .then(function(res) { return res.json(); })

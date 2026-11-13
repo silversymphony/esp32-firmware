@@ -1,5 +1,5 @@
 {
   "version": "1.4.0",
   "url": "https://cdn.jsdelivr.net/gh/silversymphony/esp32-firmware@main/esp32_v1.4.0/esp32_v1.4.0.ino.bin",
-  "changelog": "Bản phát hành v1.4.0: Sửa lỗi tự động lưu và khởi động lại khi đang nhập cấu hình pool trong Web Portal; thêm hộp thoại xác nhận khi lưu AP; chặn phím Enter gửi nhầm; ngăn polling ngầm ghi đè ô nhập liệu; cấp Gateway và DNS đầy đủ để điện thoại tự động kích hoạt 5G (Poor network) khi tắt Wi-Fi nguồn; sửa dứt điểm lỗi HTTPS OTA."
+  "changelog": "Bản phát hành v1.4.0: Khôi phục cơ chế cấp IP ngẫu nhiên trong dải DHCP Pool; kiểm tra tính hợp lệ toàn diện của IP Gateway, Subnet Mask và dải DHCP; thông báo lỗi chi tiết khi dải IP sai quy cách; bổ sung hộp ghi chú hướng dẫn cấu hình DHCP Pool trực quan trên Web Portal."
 }

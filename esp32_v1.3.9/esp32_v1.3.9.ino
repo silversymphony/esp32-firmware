@@ -99,6 +99,10 @@ String ota_err_msg = "";
 bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &errMsg);
 void performGithubOta(const String &binUrl);
 bool parse_mac(const String &macStr, uint8_t *macArr);
+String validateMacAddress(const String &macStr, uint8_t *macArr = NULL);
+String validateWifiPassword(const String &pass);
+String validateWifiSsid(const String &ssid);
+String validateDhcpPool(const String &gwStr, const String &subStr, const String &startStr, const String &endStr);
 void configureSoftApDhcp(bool randomizePool = false);
 void triggerStaConnect();
 void stopStaConnecting();
@@ -576,21 +580,29 @@ void handleBleCommand(String cmd) {
     String newPass = (comma >= 0) ? payload.substring(comma + 1) : ap_password;
     newSsid.trim(); newPass.trim();
 
-    if (newSsid.length() > 0) {
-      ap_ssid = newSsid;
-      ap_password = newPass;
-
-      prefs.begin("gateway", false);
-      prefs.putString("ap_ssid", ap_ssid);
-      prefs.putString("ap_pass", ap_password);
-      prefs.end();
-
-      sendResponse("[OK] Da luu SoftAP SSID='" + ap_ssid + "'. ESP32 se tu dong khoi dong lai sau 1.5 giay!");
-      should_reboot = true;
-      reboot_time = millis() + 1500;
-    } else {
-      sendResponse("[ERROR] Cu phap sai! Hay dung: AP:TenWifi,MatKhau (hoac AP:TenWifi de giu mat khau cu)");
+    String errSsid = validateWifiSsid(newSsid);
+    if (errSsid.length() > 0) {
+      sendResponse("[ERROR] " + errSsid);
+      return;
     }
+
+    String errPass = validateWifiPassword(newPass);
+    if (errPass.length() > 0) {
+      sendResponse("[ERROR] " + errPass);
+      return;
+    }
+
+    ap_ssid = newSsid;
+    ap_password = newPass;
+
+    prefs.begin("gateway", false);
+    prefs.putString("ap_ssid", ap_ssid);
+    prefs.putString("ap_pass", ap_password);
+    prefs.end();
+
+    sendResponse("[OK] Da luu SoftAP SSID='" + ap_ssid + "' | Pass: " + (ap_password.length() > 0 ? ap_password : "[Mang mo - Open]") + ". ESP32 se tu dong khoi dong lai sau 1.5 giay!");
+    should_reboot = true;
+    reboot_time = millis() + 1500;
     return;
   }
 
@@ -686,6 +698,21 @@ void handleBleCommand(String cmd) {
     bool found = false;
     for (int i = 0; i < profile_count; i++) {
       if (profiles[i].id == id) {
+        String errSsid = validateWifiSsid(ap_ssid);
+        if (errSsid.length() > 0) {
+          sendResponse("[ERROR] SoftAP hien tai co loi: " + errSsid);
+          return;
+        }
+        String errPass = validateWifiPassword(ap_password);
+        if (errPass.length() > 0) {
+          sendResponse("[ERROR] SoftAP hien tai co loi: " + errPass);
+          return;
+        }
+        String errMac = validateMacAddress(ap_bssid_str);
+        if (errMac.length() > 0) {
+          sendResponse("[ERROR] SoftAP hien tai co loi: " + errMac);
+          return;
+        }
         if (newName.length() > 0) profiles[i].name = newName;
         profiles[i].ssid = ap_ssid;
         profiles[i].pass = ap_password;
@@ -726,6 +753,23 @@ void handleBleCommand(String cmd) {
   if (cmd.startsWith("PROFILE:SAVE:") || cmd.startsWith("profile:save:")) {
     String name = cmd.substring(13); name.trim();
     if (name.length() == 0) name = "Preset " + String(profile_count + 1);
+
+    String errSsid = validateWifiSsid(ap_ssid);
+    if (errSsid.length() > 0) {
+      sendResponse("[ERROR] Khong the luu Preset: " + errSsid);
+      return;
+    }
+    String errPass = validateWifiPassword(ap_password);
+    if (errPass.length() > 0) {
+      sendResponse("[ERROR] Khong the luu Preset: " + errPass);
+      return;
+    }
+    String errMac = validateMacAddress(ap_bssid_str);
+    if (errMac.length() > 0) {
+      sendResponse("[ERROR] Khong the luu Preset: " + errMac);
+      return;
+    }
+
     ApProfile p;
     p.id = "p" + String(millis());
     p.name = name;
@@ -802,14 +846,15 @@ void handleBleCommand(String cmd) {
   if (cmd.startsWith("APMAC:") || cmd.startsWith("apmac:")) {
     String macStr = cmd.substring(6); macStr.trim();
     uint8_t dummy[6];
-    if (parse_mac(macStr, dummy)) {
+    String err = validateMacAddress(macStr, dummy);
+    if (err.length() == 0) {
       ap_bssid_str = macStr;
       prefs.begin("gateway", false);
       prefs.putString("ap_bssid", ap_bssid_str);
       prefs.end();
       sendResponse("[OK] Da luu dia chi MAC SoftAP: " + ap_bssid_str + ". Gui 'REBOOT' de ap dung!");
     } else {
-      sendResponse("[ERROR] Dinh dang MAC sai! Vi du hop le: APMAC:84:F1:47:4F:27:A0");
+      sendResponse("[ERROR] " + err);
     }
     return;
   }
@@ -818,30 +863,33 @@ void handleBleCommand(String cmd) {
   if (cmd.startsWith("APIP:") || cmd.startsWith("apip:")) {
     String payload = cmd.substring(5); payload.trim();
     int comma = payload.indexOf(',');
-    String newIp = (comma >= 0) ? payload.substring(0, comma) : payload;
-    String newSub = (comma >= 0) ? payload.substring(comma + 1) : ap_subnet_str;
-    newIp.trim(); newSub.trim();
-    IPAddress testIp, testSub;
-    if (testIp.fromString(newIp) && testSub.fromString(newSub)) {
-      ap_ip_str = newIp;
-      ap_subnet_str = newSub;
-      prefs.begin("gateway", false);
-      prefs.putString("ap_ip", ap_ip_str);
-      prefs.putString("ap_subnet", ap_subnet_str);
-
-      // Tự động đồng bộ dải DHCP sang cùng subnet /24 với Gateway IP mới
-      IPAddress curDhcpStart;
-      if (!curDhcpStart.fromString(dhcp_start_str) || curDhcpStart[0] != testIp[0] || curDhcpStart[1] != testIp[1] || curDhcpStart[2] != testIp[2]) {
-        dhcp_start_str = String(testIp[0]) + "." + String(testIp[1]) + "." + String(testIp[2]) + ".10";
-        dhcp_end_str   = String(testIp[0]) + "." + String(testIp[1]) + "." + String(testIp[2]) + ".200";
-        prefs.putString("dhcp_start", dhcp_start_str);
-        prefs.putString("dhcp_end", dhcp_end_str);
-      }
-      prefs.end();
-      sendResponse("[OK] Da luu Gateway IP: " + ap_ip_str + " | Subnet: " + ap_subnet_str + " | DHCP: " + dhcp_start_str + " -> " + dhcp_end_str + ". Gui 'REBOOT' de ap dung!");
-    } else {
-      sendResponse("[ERROR] IP hoac Subnet khong hop le! Vi du: APIP:10.51.31.254,255.255.255.0");
+    if (comma < 0) {
+      sendResponse("[ERROR] Cu phap sai! Hay dung: APIP:IP_Gateway,Subnet_Mask (Vi du: APIP:10.51.31.254,255.255.255.0)");
+      return;
     }
+    String newIp = payload.substring(0, comma);
+    String newSub = payload.substring(comma + 1);
+    newIp.trim(); newSub.trim();
+    String autoStart = String(newIp.substring(0, newIp.lastIndexOf('.') + 1)) + "10";
+    String autoEnd = String(newIp.substring(0, newIp.lastIndexOf('.') + 1)) + "200";
+    String poolErr = validateDhcpPool(newIp, newSub, autoStart, autoEnd);
+    if (poolErr.length() > 0) {
+      sendResponse("[ERROR] " + poolErr);
+      return;
+    }
+    ap_ip_str = newIp;
+    ap_subnet_str = newSub;
+    dhcp_start_str = autoStart;
+    dhcp_end_str   = autoEnd;
+    active_pool_start = 0;
+    active_pool_end = 0;
+    prefs.begin("gateway", false);
+    prefs.putString("ap_ip", ap_ip_str);
+    prefs.putString("ap_subnet", ap_subnet_str);
+    prefs.putString("dhcp_start", dhcp_start_str);
+    prefs.putString("dhcp_end", dhcp_end_str);
+    prefs.end();
+    sendResponse("[OK] Da luu Gateway IP: " + ap_ip_str + " | Subnet: " + ap_subnet_str + " | Dải DHCP: " + dhcp_start_str + " -> " + dhcp_end_str + ". Gui 'REBOOT' de ap dung!");
     return;
   }
 
@@ -849,24 +897,29 @@ void handleBleCommand(String cmd) {
   if (cmd.startsWith("DHCP:") || cmd.startsWith("dhcp:")) {
     String payload = cmd.substring(5); payload.trim();
     int comma = payload.indexOf(',');
-    if (comma >= 0) {
-      String startIp = payload.substring(0, comma);
-      String endIp = payload.substring(comma + 1);
-      startIp.trim(); endIp.trim();
-      IPAddress sIp, eIp;
-      if (sIp.fromString(startIp) && eIp.fromString(endIp)) {
-        dhcp_start_str = startIp;
-        dhcp_end_str = endIp;
-        prefs.begin("gateway", false);
-        prefs.putString("dhcp_start", dhcp_start_str);
-        prefs.putString("dhcp_end", dhcp_end_str);
-        prefs.end();
-        configureSoftApDhcp();
-        sendResponse("[OK] Da luu dai cap DHCP: " + dhcp_start_str + " -> " + dhcp_end_str);
-        return;
-      }
+    if (comma < 0) {
+      sendResponse("[ERROR] Cu phap sai! Hay dung: DHCP:IP_BatDau,IP_KetThuc (Vi du: DHCP:10.51.31.10,10.51.31.200)");
+      return;
     }
-    sendResponse("[ERROR] Cu phap sai! Vi du: DHCP:10.51.31.10,10.51.31.200");
+    String startIp = payload.substring(0, comma);
+    String endIp = payload.substring(comma + 1);
+    startIp.trim(); endIp.trim();
+    String poolErr = validateDhcpPool(ap_ip_str, ap_subnet_str, startIp, endIp);
+    if (poolErr.length() > 0) {
+      sendResponse("[ERROR] " + poolErr);
+      return;
+    }
+
+    dhcp_start_str = startIp;
+    dhcp_end_str = endIp;
+    active_pool_start = 0;
+    active_pool_end = 0;
+    prefs.begin("gateway", false);
+    prefs.putString("dhcp_start", dhcp_start_str);
+    prefs.putString("dhcp_end", dhcp_end_str);
+    prefs.end();
+    configureSoftApDhcp(true);
+    sendResponse("[OK] Da luu dai cap DHCP ngau nhien moi: " + dhcp_start_str + " -> " + dhcp_end_str);
     return;
   }
 
@@ -1753,18 +1806,123 @@ IPAddress u32ToIp(uint32_t val) {
   return IPAddress((val >> 24) & 0xFF, (val >> 16) & 0xFF, (val >> 8) & 0xFF, val & 0xFF);
 }
 
-// Phân giải chuỗi MAC "84:F1:47:4F:27:A0" sang mảng 6 byte
-bool parse_mac(const String &macStr, uint8_t *macArr) {
+// Kiểm tra và phân giải chuỗi MAC "84:F1:47:4F:27:A0"
+String validateMacAddress(const String &macStr, uint8_t *macArr) {
+  uint8_t tempArr[6];
+  uint8_t *arr = macArr ? macArr : tempArr;
   int values[6];
   if (sscanf(macStr.c_str(), "%x:%x:%x:%x:%x:%x", 
              &values[0], &values[1], &values[2], 
-             &values[3], &values[4], &values[5]) == 6) {
-    for (int i = 0; i < 6; i++) {
-      macArr[i] = (uint8_t)values[i];
-    }
-    return true;
+             &values[3], &values[4], &values[5]) != 6) {
+    return "Dinh dang MAC sai! Vi du hop le: 84:F1:47:4F:27:A0 hoac 02:00:00:00:00:01";
   }
-  return false;
+  for (int i = 0; i < 6; i++) {
+    if (values[i] < 0 || values[i] > 255) {
+      return "Gia tri byte trong dia chi MAC phai tu 00 den FF!";
+    }
+    arr[i] = (uint8_t)values[i];
+  }
+  // Byte đầu tiên không được có bit LSB là 1 (Multicast/Broadcast)
+  if ((arr[0] & 0x01) != 0) {
+    char hexByte[5];
+    snprintf(hexByte, sizeof(hexByte), "%02X", arr[0]);
+    return "MAC khong hop le! Byte dau (" + String(hexByte) + ") la Multicast/Broadcast (bit le). Byte dau phai la so chan (chu so thu hai phai la 0, 2, 4, 6, 8, A, C, E)!";
+  }
+  bool allZero = true, allFF = true;
+  for (int i = 0; i < 6; i++) {
+    if (arr[i] != 0x00) allZero = false;
+    if (arr[i] != 0xFF) allFF = false;
+  }
+  if (allZero) return "Dia chi MAC khong duoc la 00:00:00:00:00:00!";
+  if (allFF) return "Dia chi MAC khong duoc la FF:FF:FF:FF:FF:FF!";
+  return ""; // Hợp lệ
+}
+
+bool parse_mac(const String &macStr, uint8_t *macArr) {
+  return validateMacAddress(macStr, macArr).length() == 0;
+}
+
+// Kiểm tra mật khẩu Wi-Fi (WPA2-PSK: 8 - 63 ký tự, hoặc để trống cho mạng mở)
+String validateWifiPassword(const String &pass) {
+  if (pass.length() == 0) return ""; // Mạng mở hợp lệ
+  if (pass.length() < 8) {
+    return "Mat khau Wi-Fi (WPA2) phai co it nhat 8 ky tu (hien tai co " + String(pass.length()) + " ky tu)! De trong neu muon tao mang mo (Open).";
+  }
+  if (pass.length() > 63) {
+    return "Mat khau Wi-Fi khong duoc vuot qua 63 ky tu (hien tai " + String(pass.length()) + " ky tu)!";
+  }
+  return "";
+}
+
+// Kiểm tra SSID Wi-Fi (1 - 32 ký tự)
+String validateWifiSsid(const String &ssid) {
+  if (ssid.length() == 0) {
+    return "Ten Wi-Fi (SSID) khong duoc de trong!";
+  }
+  if (ssid.length() > 32) {
+    return "Ten Wi-Fi (SSID) toi da 32 ky tu (hien tai co " + String(ssid.length()) + " ky tu)!";
+  }
+  return "";
+}
+
+// Kiểm tra tính hợp lệ của IP Gateway, Subnet Mask và Dải DHCP Pool
+String validateDhcpPool(const String &gwStr, const String &subStr, const String &startStr, const String &endStr) {
+  IPAddress gw, sub, start, end;
+  if (!gw.fromString(gwStr.c_str()) || gw[0] == 0 || gw[0] >= 224) {
+    return "IP Gateway khong hop le! (Vi du: 10.51.31.254 hoac 192.168.4.1)";
+  }
+  if (!sub.fromString(subStr.c_str())) {
+    return "Subnet Mask khong hop le! (Vi du: 255.255.255.0)";
+  }
+  uint32_t subU32 = ipToU32(sub);
+  uint32_t inv = ~subU32;
+  // Kiểm tra subnet mask có hợp lệ (các bit 1 liên tục từ MSB sang LSB)
+  if (subU32 == 0 || (inv & (inv + 1)) != 0) {
+    return "Subnet Mask khong dung chuan IPv4! (Vi du hop le: 255.255.255.0)";
+  }
+  if (!start.fromString(startStr.c_str())) {
+    return "IP bat dau DHCP khong hop le! (Vi du: 10.51.31.10)";
+  }
+  if (!end.fromString(endStr.c_str())) {
+    return "IP ket thuc DHCP khong hop le! (Vi du: 10.51.31.200)";
+  }
+
+  uint32_t gwU32 = ipToU32(gw);
+  uint32_t startU32 = ipToU32(start);
+  uint32_t endU32 = ipToU32(end);
+
+  // 1. Kiểm tra cùng lớp mạng Subnet
+  if ((startU32 & subU32) != (gwU32 & subU32)) {
+    return "IP bat dau DHCP (" + startStr + ") khong cung subnet voi Gateway (" + gwStr + ")!";
+  }
+  if ((endU32 & subU32) != (gwU32 & subU32)) {
+    return "IP ket thuc DHCP (" + endStr + ") khong cung subnet voi Gateway (" + gwStr + ")!";
+  }
+
+  // 2. Kiểm tra thứ tự bắt đầu / kết thúc
+  if (startU32 > endU32) {
+    return "IP bat dau DHCP (" + startStr + ") phai nho hon hoac bang IP ket thuc (" + endStr + ")!";
+  }
+
+  // 3. Kiểm tra địa chỉ mạng (.0) và quảng bá (.255)
+  if ((startU32 & inv) == 0 || (endU32 & inv) == 0) {
+    return "Dai DHCP khong duoc chua dia chi mang (.0)!";
+  }
+  if ((startU32 & inv) == inv || (endU32 & inv) == inv) {
+    return "Dai DHCP khong duoc chua dia chi quang ba broadcast (.255)!";
+  }
+
+  // 4. Kiểm tra xung đột với Gateway IP
+  if (gwU32 >= startU32 && gwU32 <= endU32) {
+    return "IP Gateway (" + gwStr + ") khong duoc nam ben trong dai cap phat DHCP (" + startStr + " -> " + endStr + ") de tranh xung dot IP!";
+  }
+
+  // 5. Kiểm tra số lượng IP tối thiểu
+  if (endU32 - startU32 + 1 < 2) {
+    return "Dai DHCP phai co it nhat 2 dia chi IP de thiet bi co the ket noi!";
+  }
+
+  return ""; // Hợp lệ
 }
 
 // Quản lý DNS Relay: NAPT tự động dịch gói tin DNS (UDP 53) trực tiếp ra mạng ngoài không cần proxy
@@ -1889,18 +2047,51 @@ void configureSoftApDhcp(bool randomizePool) {
       ip_info.gw.addr = (uint32_t)gw_ip;
       esp_netif_set_ip_info(ap_netif, &ip_info);
 
-      // Dải cấp IP cố định theo cấu hình đã lưu
+      // Dải cấp IP ngẫu nhiên trong tổng dải cấu hình
       uint32_t s_u32 = ipToU32(s_ip);
       uint32_t e_u32 = ipToU32(e_ip);
+      uint32_t gw_u32 = ipToU32(gw_ip);
+
       if (e_u32 < s_u32) {
         uint32_t tmp = s_u32; s_u32 = e_u32; e_u32 = tmp;
       }
-      // ESP-IDF giới hạn dải cấp IP tối đa là 100 địa chỉ (DHCPS_MAX_LEASE = 100)
-      if (e_u32 - s_u32 + 1 > 100) {
-        e_u32 = s_u32 + 99; // Giới hạn <= 100 địa chỉ để tránh lỗi ESP_ERR_ESP_NETIF_INVALID_PARAMS (20481)
+
+      uint32_t total = e_u32 - s_u32 + 1;
+      const uint32_t MAX_WINDOW = 60; // Giới hạn cửa sổ cấp phát <= 60 địa chỉ (ESP-IDF DHCPS_MAX_LEASE = 100)
+      uint32_t win_size = (total > MAX_WINDOW) ? MAX_WINDOW : ((total > 10) ? (total / 2 + 1) : total);
+
+      // Tái chọn ngẫu nhiên cửa sổ pool khi chưa có hoặc khi được yêu cầu (tất cả client đã ngắt kết nối hoặc reboot)
+      if (active_pool_start == 0 || active_pool_end == 0 || randomizePool || 
+          active_pool_start < s_u32 || active_pool_end > e_u32) {
+        uint32_t cur_start = s_u32;
+        uint32_t cur_end = e_u32;
+
+        if (total > win_size) {
+          uint32_t max_offset = total - win_size;
+          uint32_t rand_offset = esp_random() % (max_offset + 1);
+          cur_start = s_u32 + rand_offset;
+          cur_end = cur_start + win_size - 1;
+
+          // Đảm bảo không trùng IP Gateway
+          if (gw_u32 >= cur_start && gw_u32 <= cur_end) {
+            if (cur_start >= s_u32 + win_size) {
+              cur_start -= win_size;
+              cur_end -= win_size;
+            } else if (cur_end + win_size <= e_u32) {
+              cur_start += win_size;
+              cur_end += win_size;
+            }
+          }
+        }
+        active_pool_start = cur_start;
+        active_pool_end = cur_end;
+        logPrintf("[DHCP] Da chon ngau nhien pool cap IP: %s -> %s (trong tong dai %s -> %s)",
+                  u32ToIp(active_pool_start).toString().c_str(), u32ToIp(active_pool_end).toString().c_str(),
+                  dhcp_start_str.c_str(), dhcp_end_str.c_str());
       }
-      IPAddress act_s = u32ToIp(s_u32);
-      IPAddress act_e = u32ToIp(e_u32);
+
+      IPAddress act_s = u32ToIp(active_pool_start);
+      IPAddress act_e = u32ToIp(active_pool_end);
 
       dhcps_lease_t lease;
       memset(&lease, 0, sizeof(lease));
@@ -1918,7 +2109,7 @@ void configureSoftApDhcp(bool randomizePool) {
       if (opt_err != ESP_OK) {
         logPrintf("[DHCP] Set dai IP that bai: %d", opt_err);
       } else {
-        logPrintf("[DHCP] Set thanh cong dai IP: %s -> %s", act_s.toString().c_str(), act_e.toString().c_str());
+        logPrintf("[DHCP] Set thanh cong dai IP ngau nhien: %s -> %s", act_s.toString().c_str(), act_e.toString().c_str());
       }
     } else {
       esp_netif_dhcps_stop(ap_netif);
@@ -1991,7 +2182,11 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
     Serial.println(buf);
     addLogToBuffer(String(buf));
 
-    // Giu nguyen pool IP co dinh, khong doi ngau nhien lam rot ket noi DHCP
+    // Chi yeu cau chon lai ngau nhien pool IP khi tat ca thiet bi deu da ngat ket noi
+    wifi_sta_list_t sta_list;
+    if (esp_wifi_ap_get_sta_list(&sta_list) == ESP_OK && sta_list.num == 0) {
+      dhcp_reconfigure_needed = true;
+    }
   } else if (event == ARDUINO_EVENT_WIFI_AP_STACONNECTED) {
     uint8_t *mac = info.wifi_ap_staconnected.mac;
     char buf[120];
@@ -2464,27 +2659,50 @@ void handleApiReboot() {
 // API: Lưu các tham số mạng phát (SoftAP) và khởi động lại
 void handleApiSaveAp() {
   if (server.hasArg("ssid") && server.hasArg("ip") && server.hasArg("subnet")) {
-    ap_ssid = server.arg("ssid");
-    ap_password = server.arg("pass");
-    if (server.hasArg("channel")) {
-      int ch = server.arg("channel").toInt();
-      if (ch >= 0 && ch <= 11) ap_channel = ch;
-    }
-    if (server.hasArg("bssid")) ap_bssid_str = server.arg("bssid");
-    ap_ip_str = server.arg("ip");
-    ap_subnet_str = server.arg("subnet");
-    if (server.hasArg("dhcp_start")) dhcp_start_str = server.arg("dhcp_start");
-    if (server.hasArg("dhcp_end")) dhcp_end_str = server.arg("dhcp_end");
+    String newSsid = server.arg("ssid"); newSsid.trim();
+    String newPass = server.hasArg("pass") ? server.arg("pass") : ""; newPass.trim();
+    String newIp = server.arg("ip"); newIp.trim();
+    String newSub = server.arg("subnet"); newSub.trim();
+    int ch = server.hasArg("channel") ? server.arg("channel").toInt() : ap_channel;
+    String newBssid = server.hasArg("bssid") ? server.arg("bssid") : ap_bssid_str; newBssid.trim();
+    String newStart = server.hasArg("dhcp_start") ? server.arg("dhcp_start") : dhcp_start_str; newStart.trim();
+    String newEnd = server.hasArg("dhcp_end") ? server.arg("dhcp_end") : dhcp_end_str; newEnd.trim();
 
-    IPAddress testGw, testStart, testEnd;
-    if (testGw.fromString(ap_ip_str)) {
-      if (!testStart.fromString(dhcp_start_str) || testStart[0] != testGw[0] || testStart[1] != testGw[1] || testStart[2] != testGw[2]) {
-        dhcp_start_str = String(testGw[0]) + "." + String(testGw[1]) + "." + String(testGw[2]) + ".10";
-      }
-      if (!testEnd.fromString(dhcp_end_str) || testEnd[0] != testGw[0] || testEnd[1] != testGw[1] || testEnd[2] != testGw[2]) {
-        dhcp_end_str   = String(testGw[0]) + "." + String(testGw[1]) + "." + String(testGw[2]) + ".100";
-      }
+    String err = validateWifiSsid(newSsid);
+    if (err.length() > 0) {
+      server.send(400, "application/json", "{\"error\":\"" + escapeJson(err) + "\"}");
+      return;
     }
+    err = validateWifiPassword(newPass);
+    if (err.length() > 0) {
+      server.send(400, "application/json", "{\"error\":\"" + escapeJson(err) + "\"}");
+      return;
+    }
+    if (ch < 0 || ch > 11) {
+      server.send(400, "application/json", "{\"error\":\"Kenh hop le tu 1 den 11 hoac 0 (Auto)\"}");
+      return;
+    }
+    err = validateMacAddress(newBssid);
+    if (err.length() > 0) {
+      server.send(400, "application/json", "{\"error\":\"" + escapeJson(err) + "\"}");
+      return;
+    }
+    String poolErr = validateDhcpPool(newIp, newSub, newStart, newEnd);
+    if (poolErr.length() > 0) {
+      server.send(400, "application/json", "{\"error\":\"" + escapeJson(poolErr) + "\"}");
+      return;
+    }
+
+    ap_ssid = newSsid;
+    ap_password = newPass;
+    ap_channel = ch;
+    ap_bssid_str = newBssid;
+    ap_ip_str = newIp;
+    ap_subnet_str = newSub;
+    dhcp_start_str = newStart;
+    dhcp_end_str = newEnd;
+    active_pool_start = 0;
+    active_pool_end = 0;
 
     prefs.begin("gateway", false);
     prefs.putString("ap_ssid", ap_ssid);
@@ -2505,7 +2723,7 @@ void handleApiSaveAp() {
     should_reboot = true;
     reboot_time = millis() + 1500;
   } else {
-    server.send(400, "application/json", "{\"error\":\"Thieu tham so bat buoc\"}");
+    server.send(400, "application/json", "{\"error\":\"Thieu tham so bat buoc (ssid, ip, subnet)\"}");
   }
 }
 
@@ -2615,19 +2833,46 @@ void handleApiSaveProfile() {
     p.ssid = server.arg("ssid");
     p.ssid.trim();
     p.pass = server.hasArg("pass") ? server.arg("pass") : "";
+    p.pass.trim();
     p.channel = server.hasArg("channel") ? server.arg("channel").toInt() : 6;
     p.bssid = (server.hasArg("bssid") && server.arg("bssid").length() > 0) ? server.arg("bssid") : ap_bssid_str;
+    p.bssid.trim();
     p.ip = (server.hasArg("ip") && server.arg("ip").length() > 0) ? server.arg("ip") : ap_ip_str;
+    p.ip.trim();
     p.subnet = (server.hasArg("subnet") && server.arg("subnet").length() > 0) ? server.arg("subnet") : ap_subnet_str;
+    p.subnet.trim();
     p.dhcp_start = (server.hasArg("dhcp_start") && server.arg("dhcp_start").length() > 0) ? server.arg("dhcp_start") : dhcp_start_str;
+    p.dhcp_start.trim();
     p.dhcp_end = (server.hasArg("dhcp_end") && server.arg("dhcp_end").length() > 0) ? server.arg("dhcp_end") : dhcp_end_str;
+    p.dhcp_end.trim();
 
     if (p.name.length() == 0) p.name = p.ssid;
+
+    String err = validateWifiSsid(p.ssid);
+    if (err.length() > 0) {
+      server.send(400, "application/json", "{\"error\":\"" + escapeJson(err) + "\"}");
+      return;
+    }
+    err = validateWifiPassword(p.pass);
+    if (err.length() > 0) {
+      server.send(400, "application/json", "{\"error\":\"" + escapeJson(err) + "\"}");
+      return;
+    }
+    err = validateMacAddress(p.bssid);
+    if (err.length() > 0) {
+      server.send(400, "application/json", "{\"error\":\"" + escapeJson(err) + "\"}");
+      return;
+    }
+    String poolErr = validateDhcpPool(p.ip, p.subnet, p.dhcp_start, p.dhcp_end);
+    if (poolErr.length() > 0) {
+      server.send(400, "application/json", "{\"error\":\"" + escapeJson(poolErr) + "\"}");
+      return;
+    }
 
     if (addOrUpdateProfile(p)) {
       String json = "{\"success\":true,\"id\":\"" + escapeJson(p.id) + "\",\"msg\":\"Da luu mau cau hinh thanh cong!\"}";
       server.sendHeader("Connection", "close");
-  server.send(200, "application/json", json);
+      server.send(200, "application/json", json);
       logPrintf("[PROFILE] Da luu/cap nhat Preset: '%s' (ID: %s)", p.name.c_str(), p.id.c_str());
     } else {
       server.send(400, "application/json", "{\"error\":\"Danh sach toi da 10 mau cau hinh!\"}");
@@ -2845,13 +3090,16 @@ void setup() {
 
   // Bước 4: Nạp địa chỉ MAC (BSSID) phần cứng cho cổng phát AP
   uint8_t custom_bssid[6];
-  if (parse_mac(ap_bssid_str, custom_bssid)) {
+  String macErr = validateMacAddress(ap_bssid_str, custom_bssid);
+  if (macErr.length() == 0) {
     esp_err_t err_mac = esp_wifi_set_mac(WIFI_IF_AP, custom_bssid);
     if (err_mac == ESP_OK) {
       logPrintf("[OK] Da nap BSSID: %s", ap_bssid_str.c_str());
     } else {
-      logMessage("[LOI] Khong the nap BSSID!");
+      logPrintf("[LOI MAC] Khong the nap BSSID: %s (Ma loi ESP-IDF: 0x%X). Chip se dung MAC goc!", ap_bssid_str.c_str(), err_mac);
     }
+  } else {
+    logPrintf("[LOI MAC] BSSID trong Flash khong hop le: %s (%s). Chip dung MAC goc!", ap_bssid_str.c_str(), macErr.c_str());
   }
 
   // Bước 5: Cấu hình Gateway và Subnet Mask /22 cho mạng phát SoftAP qua Native ESP-IDF
@@ -2863,7 +3111,7 @@ void setup() {
     esp_netif_ip_info_t ip_info;
     ip_info.ip.addr = (uint32_t)ap_ip;
     ip_info.netmask.addr = (uint32_t)subnet;
-    ip_info.gw.addr = (sta_enabled && WiFi.status() == WL_CONNECTED) ? (uint32_t)ap_ip : 0; // Khi có Wi-Fi nguồn: gán gw để DHCPS cấp Option 3; Khi tắt STA: gw=0 để điện thoại dùng 5G
+    ip_info.gw.addr = (uint32_t)ap_ip;
     esp_netif_dhcps_stop(ap_netif);
     esp_netif_set_ip_info(ap_netif, &ip_info);
   }
@@ -2875,17 +3123,34 @@ void setup() {
     logPrintf("[AP] Da chon Kenh %d toi uu cho SoftAP!", current_effective_channel);
   }
 
-  WiFi.softAP(ap_ssid.c_str(), (ap_password.length() > 0 ? ap_password.c_str() : NULL), current_effective_channel, 0, 4);
+  // Xử lý an toàn mật khẩu SoftAP (phòng trường hợp trước đó đã lưu mật khẩu < 8 ký tự vào Flash)
+  const char* ap_pass_ptr = NULL;
+  if (ap_password.length() >= 8) {
+    ap_pass_ptr = ap_password.c_str();
+  } else if (ap_password.length() > 0) {
+    logPrintf("[CANH BAO] Mat khau SoftAP ('%s') chi co %d ky tu (< 8 ky tu WPA2)! Khong the bat ma hoa WPA2.",
+              ap_password.c_str(), ap_password.length());
+    logPrintf("[CANH BAO] Tu dong phat o che do MANG MO (Open) de he thong hoat dong. Hay dung lenh 'AP:%s,mat_khau_moi' (>= 8 ky tu) de dat lai!",
+              ap_ssid.c_str());
+    ap_pass_ptr = NULL; // Chuyển sang mạng mở để WiFi.softAP không bị reject!
+  }
+
+  bool ap_started = WiFi.softAP(ap_ssid.c_str(), ap_pass_ptr, current_effective_channel, 0, 4);
 
   // Bước 6: Áp dụng công suất phát sóng Wi-Fi (Max TX Power Boost)
   applyTxPower(tx_power_boost);
 
   // Bước 7: Cấu hình dải IP cho Native ESP-IDF DHCP Server
-  configureSoftApDhcp(false);
+  configureSoftApDhcp(true);
 
-  logPrintf("[AP] Phat song thanh cong: SSID: '%s' | MAC: %s | Gateway: %s | Kenh: %d%s", 
-            ap_ssid.c_str(), WiFi.softAPmacAddress().c_str(), WiFi.softAPIP().toString().c_str(),
-            current_effective_channel, (ap_channel == 0 ? " (Auto)" : ""));
+  if (ap_started) {
+    logPrintf("[AP] Phat song thanh cong: SSID: '%s' | MAC: %s | Gateway: %s | Kenh: %d%s%s", 
+              ap_ssid.c_str(), WiFi.softAPmacAddress().c_str(), WiFi.softAPIP().toString().c_str(),
+              current_effective_channel, (ap_channel == 0 ? " (Auto)" : ""),
+              (ap_pass_ptr ? " | Bao mat: WPA2" : " | Mang: MO (Khong mat khau)"));
+  } else {
+    logPrintf("[LOI NGHIEP TRONG] Khong the khoi tao Wi-Fi AP '%s'! Vui long kiem tra lai ten SSID va mat khau!", ap_ssid.c_str());
+  }
 
   // Bước 8: Đăng ký các Endpoint cho Web Server
   server.on("/", HTTP_GET, handleRoot);
@@ -2978,9 +3243,13 @@ void loop() {
   // 1b. Phục vụ các yêu cầu Web Server
   server.handleClient();
 
-  // Giu nguyen pool IP co dinh theo yeu cau nguoi dung
+  // 2. Tái cấu hình ngẫu nhiên pool DHCP khi tat ca thiet bi da ngat ket noi
+  if (dhcp_reconfigure_needed) {
+    dhcp_reconfigure_needed = false;
+    configureSoftApDhcp(true);
+  }
 
-  // 2. Phục vụ Captive DNS Server nếu chưa có Internet
+  // 2b. Phục vụ Captive DNS Server nếu chưa có Internet
   if (dns_captive_running) {
     dnsServer.processNextRequest();
   }

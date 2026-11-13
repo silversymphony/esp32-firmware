@@ -82,6 +82,8 @@ String pending_ota_bin_url = "";
 bool pending_sta_mode_change = false;
 bool pending_sta_mode_val = false;
 unsigned long sta_mode_change_time = 0;
+bool pending_sta_forget = false;
+unsigned long sta_forget_time = 0;
 
 enum OtaCheckState {
   OTA_CHECK_IDLE = 0,
@@ -357,6 +359,15 @@ void stopStaConnecting() {
   sta_conn_state = STA_STATE_IDLE;
 }
 
+// Ngắt phiên STA và đồng bộ NAPT/DNS/DHCP mà không tắt SoftAP hay làm phân mảnh RAM
+void disconnectStaSessionQuietly() {
+  stopStaConnecting();
+  sta_connected_state = false;
+  disableNapt();
+  syncDnsServerMode(false);
+  configureSoftApDhcp(false);
+}
+
 // Bắt đầu kết nối vào Wi-Fi nguồn
 void triggerStaConnect() {
   if (!sta_enabled || sta_ssid.length() == 0) return;
@@ -587,20 +598,15 @@ void handleBleCommand(String cmd) {
     if (newSsid.equalsIgnoreCase("CLEAR") || newSsid.length() == 0) {
       sta_ssid = "";
       sta_password = "";
-      sta_enabled = false;
       prefs.begin("gateway", false);
       prefs.remove("sta_ssid");
       prefs.remove("sta_pass");
-      prefs.putBool("sta_en", false);
       prefs.end();
-      WiFi.disconnect(true);
-      esp_wifi_disconnect();
-      WiFi.mode(WIFI_AP);
-      sta_conn_state = STA_STATE_IDLE;
-      disableNapt();
-      stopCaptiveDns();
-      configureSoftApDhcp(false);
-      sendResponse("[OK] Da xoa trang Wi-Fi nguon! Mac dinh tro ve de trong.");
+      disconnectStaSessionQuietly();
+      startOrRefreshMdns();
+      sendResponse(sta_enabled
+        ? "[OK] Da xoa trang Wi-Fi nguon! Che do STA van BAT de san sang ket noi mang moi."
+        : "[OK] Da xoa trang Wi-Fi nguon! Che do MANG NOI BO 5G van giu nguyen.");
       return;
     }
 
@@ -636,15 +642,8 @@ void handleBleCommand(String cmd) {
     prefs.begin("gateway", false);
     prefs.putBool("sta_en", false);
     prefs.end();
-    WiFi.disconnect(true);
-    esp_wifi_disconnect();
-    WiFi.mode(WIFI_AP);
-    sta_conn_state = STA_STATE_IDLE;
-    disableNapt();
-    stopCaptiveDns();
-    configureSoftApDhcp(false);
-    delay(50);
-    esp_wifi_deauth_sta(0);
+    disconnectStaSessionQuietly();
+    startOrRefreshMdns();
     sendResponse("[OK] Da TAT Wi-Fi nguon! ESP32 chuyen sang che do MANG NOI BO OFFLINE. Dien thoai ket noi vao se giu nguyen 5G de truy cap Internet.");
     return;
   }
@@ -1658,6 +1657,7 @@ bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &e
 
   // Thu hoi bo nho scan Wi-Fi truoc khi khoi tao SSL TLS
   WiFi.scanDelete();
+  cached_scan_json = String();
   cached_scan_json = "[]";
 
   // Đảm bảo default netif là sta_netif trước khi kết nối HTTPS ra ngoài
@@ -1691,14 +1691,14 @@ bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &e
     mirrorUrl = getJsdelivrMirrorUrl(primaryUrl);
   }
 
-  // Ưu tiên kiểm tra qua jsDelivr CDN trước vì dùng chứng chỉ ECDSA nhẹ, tiết kiệm RAM và không bao giờ nghẽn RSA
-  if (mirrorUrl.indexOf("cdn.jsdelivr.net") >= 0) {
+  // Ưu tiên kiểm tra version.json qua raw.githubusercontent.com trước (cache 5 phút, tránh bị CDN @main giữ cache 12h), lỗi mới dự phòng jsDelivr
+  if (mirrorUrl.indexOf("raw.githubusercontent.com") >= 0) {
     String tmp = primaryUrl;
     primaryUrl = mirrorUrl;
     mirrorUrl = tmp;
   }
 
-  // Tam dung BLE (neu khong co client ket noi) va DNS loop de giai phong RAM cho mbedTLS/SA Query
+  // Tam dung BLE (neu khong co client ket noi), NAPT, mDNS va DNS loop de giai phong RAM cho mbedTLS/SA Query
   bool blePausedForCheck = false;
   if (!bleConnected && NimBLEDevice::isInitialized()) {
     logMessage("[OTA] Tam dung BLE de uu tien RAM cho ket noi HTTPS kiem tra phien ban...");
@@ -1706,8 +1706,23 @@ bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &e
     blePausedForCheck = true;
     delay(50);
   }
+  bool naptWasOn = napt_enabled;
+  if (naptWasOn) {
+    disableNapt();
+  }
+  MDNS.end();
   syncDnsServerMode(true);
-  logPrintf("[OTA-MEM] Check Heap: %u bytes | Max Block: %u bytes", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+  delay(50);
+
+  bool webPausedForCheck = false;
+  if (ESP.getMaxAllocHeap() < 45000) {
+    server.stop();
+    webPausedForCheck = true;
+    delay(50);
+  }
+  logPrintf("[OTA-MEM] Check Heap: %u bytes | Max Block: %u bytes%s",
+            ESP.getFreeHeap(), ESP.getMaxAllocHeap(),
+            webPausedForCheck ? " (WebServer tam nghi)" : "");
 
   String payload = "";
   bool ok = fetchOtaJson(primaryUrl, payload, errMsg);
@@ -1723,6 +1738,13 @@ bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &e
     }
   }
 
+  if (webPausedForCheck) {
+    server.begin();
+  }
+  if (naptWasOn && sta_enabled && WiFi.status() == WL_CONNECTED) {
+    enableNapt();
+  }
+  startOrRefreshMdns();
   syncDnsServerMode(false);
   if (blePausedForCheck && ble_enabled && !NimBLEDevice::isInitialized()) {
     initBleServer();
@@ -2278,7 +2300,7 @@ void syncDnsServerMode(bool forceStop) {
   DnsMode target = DNS_MODE_OFF;
   if (!forceStop) {
     if (sta_enabled) {
-      target = (WiFi.status() == WL_CONNECTED) ? DNS_MODE_OFF : DNS_MODE_CAPTIVE;
+      target = (sta_ssid.length() > 0 && WiFi.status() == WL_CONNECTED) ? DNS_MODE_OFF : DNS_MODE_CAPTIVE;
     } else {
       target = DNS_MODE_5G_PROBE;
     }
@@ -2310,7 +2332,7 @@ void syncDnsServerMode(bool forceStop) {
   if (dns_mode == DNS_MODE_CAPTIVE) {
     logMessage("[CAPTIVE] Da khoi chay Captive DNS Server (Cho nhap Wi-Fi).");
   } else {
-    logMessage("[5G-DNS] Bat Smart Probe DNS cong 53 (4.5s Grace TTL=1s -> Sau do SERVFAIL kich hoat Poor network/5G).");
+    logMessage("[5G-DNS] Bat Smart Probe DNS cong 53 (7.5s Grace TTL=1s -> Sau do SERVFAIL kich hoat Poor network/5G).");
   }
 }
 
@@ -2445,7 +2467,7 @@ bool isClientIn5GGraceWindow(uint32_t ip_u32) {
   portENTER_CRITICAL(&g_dhcpMux);
   for (int i = 0; i < MAX_CUSTOM_DHCP_LEASES; i++) {
     if (g_dhcpLeases[i].used && g_dhcpLeases[i].active && g_dhcpLeases[i].ip_u32 == ip_u32) {
-      if ((uint32_t)(now_ms - g_dhcpLeases[i].start_ms) < 4500UL) {
+      if ((uint32_t)(now_ms - g_dhcpLeases[i].start_ms) < 7500UL) {
         inGrace = true;
       }
       break;
@@ -2887,7 +2909,7 @@ static void customDhcpRecvCb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
       customDhcpSendReply(pcb, lwip_ap, &rx, &cfg, 5, targetIp, omitForClient); // DHCPACK
       customDhcpPushLog("[WIFI-AP] Da cap IP ngau nhien: %s cho %s (Host:%s | %s) thanh cong!",
                         ipBuf, macStr, hostName[0] ? hostName : "-",
-                        omitForClient ? "5G-Opt121" : "5G-Probe4.5s");
+                        omitForClient ? "5G-Opt121" : "5G-Probe7.5s");
     } else {
       customDhcpSendReply(pcb, lwip_ap, &rx, &cfg, 6, 0, false); // DHCPNAK -> Ep DHCPDISCOVER cap IP ngau nhien
       customDhcpPushLog("[DHCP-NAK] MAC:%s xin IP cu %s -> Tu choi (NAK) de cap IP ngau nhien moi!",
@@ -3329,7 +3351,7 @@ void handleCaptiveRedirect() {
   }
 
   // 1. Khi CÓ kết nối Internet Wi-Fi nguồn: tra 204/Success binh thuong
-  if (sta_enabled && WiFi.status() == WL_CONNECTED) {
+  if (sta_enabled && sta_ssid.length() > 0 && WiFi.status() == WL_CONNECTED) {
     if (!isLocalHost || isProbeUri) {
       if (trySendProbeSuccessResponse(uri, host)) return;
     }
@@ -3342,8 +3364,8 @@ void handleCaptiveRedirect() {
   }
 
   // 2. Khi TẮT Wi-Fi nguồn (Offline 5G):
-  // - Trong 4.5s dau sau DHCPACK (Grace Window): tra 204/200 de dien thoai khong bi khoa "No internet"
-  // - Sau 4.5s: ngat ket noi probe (TCP stop) giong het luc tat STA giua chung -> kich hoat "Poor network" -> 5G!
+  // - Trong 7.5s dau sau DHCPACK (Grace Window): tra 204/200 de dien thoai khong bi khoa "No internet"
+  // - Sau 7.5s: ngat ket noi probe (TCP stop) giong het luc tat STA giua chung -> kich hoat "Poor network" -> 5G!
   if (!sta_enabled) {
     if (!isLocalHost || isProbeUri) {
       bool inGrace = isClientIn5GGraceWindow(ipToU32(server.client().remoteIP()));
@@ -3618,29 +3640,22 @@ void handleApiScan() {
   }
 }
 
-// API: Xóa hoàn toàn cấu hình Wi-Fi nguồn khỏi Flash NVS (Đưa về mặc định để trống)
+// API: Xóa hoàn toàn cấu hình Wi-Fi nguồn khỏi Flash NVS (Giữ nguyên trạng thái bật/tắt STA và sóng SoftAP)
 void handleApiForgetSta() {
   sta_ssid = "";
   sta_password = "";
-  sta_enabled = false;
 
   prefs.begin("gateway", false);
   prefs.remove("sta_ssid");
   prefs.remove("sta_pass");
-  prefs.putBool("sta_en", false);
   prefs.end();
 
-  WiFi.disconnect(true);
-  esp_wifi_disconnect();
-  WiFi.mode(WIFI_AP);
-  esp_wifi_set_channel(current_effective_channel, WIFI_SECOND_CHAN_NONE);
-  sta_conn_state = STA_STATE_IDLE;
-  disableNapt();
-  stopCaptiveDns();
-  configureSoftApDhcp(false);
+  pending_sta_forget = true;
+  sta_forget_time = millis() + 200; // Hoãn 200ms để WebServer gửi xong HTTP 200 JSON rồi mới ngắt phiên STA
 
-  logMessage("[STA] Da xoa trang Wi-Fi nguon khoi Flash NVS (Mac dinh de trong).");
-  server.send(200, "application/json", "{\"success\":true,\"msg\":\"Da xoa Wi-Fi nguon! Bo nho Flash tro ve trang thai de trong.\"}");
+  logMessage("[STA] Da xoa Wi-Fi nguon khoi Flash NVS (Giu nguyen che do STA & song SoftAP).");
+  server.sendHeader("Connection", "close");
+  server.send(200, "application/json", "{\"success\":true,\"msg\":\"Da xoa Wi-Fi nguon! Che do STA & ket noi Wi-Fi AP van giu nguyen.\"}");
 }
 
 // API: Tiếp nhận cấu hình Wi-Fi nguồn (STA) và bắt đầu kết nối thử (chỉ lưu Flash khi kết nối thành công)
@@ -4310,13 +4325,7 @@ void loop() {
     sta_enabled = pending_sta_mode_val;
 
     if (!sta_enabled) {
-      WiFi.disconnect(true);
-      esp_wifi_disconnect();
-      WiFi.mode(WIFI_AP);
-      sta_conn_state = STA_STATE_IDLE;
-      disableNapt();
-      syncDnsServerMode(false);
-      configureSoftApDhcp(false);
+      disconnectStaSessionQuietly();
       startOrRefreshMdns();
       delay(50);
       logMessage("[MODE] Da TAT Wi-Fi nguon -> Che do MANG NOI BO (Dien thoai dung 5G).");
@@ -4327,6 +4336,14 @@ void loop() {
       startOrRefreshMdns();
       logMessage("[MODE] Da BAT Wi-Fi nguon -> Dang ket noi Internet...");
     }
+  }
+
+  // 6b2. Ngắt phiên STA sau khi /api/forget_sta đã gửi phản hồi HTTP 200 về trình duyệt
+  if (pending_sta_forget && millis() >= sta_forget_time) {
+    pending_sta_forget = false;
+    disconnectStaSessionQuietly();
+    startOrRefreshMdns();
+    logMessage("[STA] Da ngat ket noi Wi-Fi nguon cu (Giu nguyen SoftAP & che do STA).");
   }
 
   // 6c. Xử lý kiểm tra OTA bất đồng bộ trong loopTask (tái sử dụng stack, không tốn thêm 8KB heap)

@@ -1,5 +1,5 @@
 {
   "version": "1.4.0",
-  "url": "https://cdn.jsdelivr.net/gh/silversymphony/esp32-firmware@ae978dc/esp32_v1.4.0/esp32_v1.4.0.ino.bin",
-  "changelog": "Bản phát hành v1.4.0: Giữ nguyên chế độ STA & sóng SoftAP khi xóa Wi-Fi nguồn; kéo dài Grace Window 5G lên 7.5s; giải phóng mDNS/NAPT/BLE giúp kiểm tra & nạp OTA ổn định sau khi đổi Wi-Fi mà không cần reboot."
+  "url": "https://cdn.jsdelivr.net/gh/silversymphony/esp32-firmware@feb53b7/esp32_v1.4.0/esp32_v1.4.0.ino.bin",
+  "changelog": "Bản phát hành v1.4.0: Chặn race condition STA_GOT_IP sau khi tắt/xóa Wi-Fi nguồn; tự làm mới Grace Window 5G (7.5s) khi gạt tắt STA không cần kết nối lại AP; quét Wi-Fi từng kênh giữ SoftAP ổn định; giảm spam log [DNS-PROBE]."
 }

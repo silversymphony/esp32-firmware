@@ -111,6 +111,8 @@ bool ensureValidApDhcpConfig(bool persistIfChanged);
 void configureSoftApDhcp(bool randomizePool = false);
 void triggerStaConnect();
 void stopStaConnecting();
+void refreshActiveLeases5GGraceWindow();
+void cancelAsyncWifiScan();
 void initBleServer();
 void deinitBleServer();
 bool startConfiguredSoftAp(bool randomizePool = true);
@@ -207,6 +209,7 @@ struct CustomDhcpLease {
   uint32_t ip_u32;
   uint32_t last_ip_u32;
   uint32_t start_ms;
+  uint32_t grace_start_ms;
   uint32_t ttl_ms;
   uint32_t decline_until_ms;
 };
@@ -596,6 +599,9 @@ void handleBleCommand(String cmd) {
     newSsid.trim(); newPass.trim();
 
     if (newSsid.equalsIgnoreCase("CLEAR") || newSsid.length() == 0) {
+      cancelAsyncWifiScan();
+      pending_sta_forget = false;
+      pending_sta_mode_change = false;
       sta_ssid = "";
       sta_password = "";
       prefs.begin("gateway", false);
@@ -610,6 +616,9 @@ void handleBleCommand(String cmd) {
       return;
     }
 
+    cancelAsyncWifiScan();
+    pending_sta_forget = false;
+    pending_sta_mode_change = false;
     sta_ssid = newSsid;
     sta_password = newPass;
     sta_enabled = true;
@@ -623,6 +632,9 @@ void handleBleCommand(String cmd) {
 
   // 4b. STA:ON | STA:OFF: Bật hoặc tắt Wi-Fi nguồn (Chế độ mạng nội bộ 5G)
   if (cmd.equalsIgnoreCase("STA:ON") || cmd.equalsIgnoreCase("sta:on")) {
+    cancelAsyncWifiScan();
+    pending_sta_forget = false;
+    pending_sta_mode_change = false;
     sta_enabled = true;
     prefs.begin("gateway", false);
     prefs.putBool("sta_en", true);
@@ -638,6 +650,9 @@ void handleBleCommand(String cmd) {
   }
 
   if (cmd.equalsIgnoreCase("STA:OFF") || cmd.equalsIgnoreCase("sta:off")) {
+    cancelAsyncWifiScan();
+    pending_sta_forget = false;
+    pending_sta_mode_change = false;
     sta_enabled = false;
     prefs.begin("gateway", false);
     prefs.putBool("sta_en", false);
@@ -1656,7 +1671,7 @@ bool checkGithubOta(String &newVer, String &binUrl, String &changelog, String &e
   configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
 
   // Thu hoi bo nho scan Wi-Fi truoc khi khoi tao SSL TLS
-  WiFi.scanDelete();
+  cancelAsyncWifiScan();
   cached_scan_json = String();
   cached_scan_json = "[]";
 
@@ -1915,6 +1930,7 @@ void performGithubOta(const String &binUrl) {
 
   // Tam ngat BLE/NAPT/DNS/WebServer/mDNS/SoftAP de giai phong >100KB RAM lien mach cho mbedTLS + Update.begin()
   ota_downloading = true;
+  cancelAsyncWifiScan();
   logMessage("[OTA] Tam ngat Wi-Fi AP/WebServer/BLE de giai phong RAM toi da cho qua trinh tai va ghi Flash...");
   delay(250); // Cho phan hoi HTTP /api/run_ota kip gui ve trinh duyet
   deinitBleServer();
@@ -2281,25 +2297,27 @@ static void logDnsProbeThrottled(const String &qname, uint16_t qtype, const char
     String key;
     unsigned long ts;
   };
-  static DnsLogSlot slots[6];
+  static DnsLogSlot slots[24];
   static uint8_t nextSlot = 0;
-  String k = qname + "#" + String(qtype);
+  String k = qname + "#" + action;
   unsigned long now = millis();
-  for (int i = 0; i < 6; i++) {
-    if (slots[i].key == k && (now - slots[i].ts) < 3000UL) {
+  for (int i = 0; i < 24; i++) {
+    if (slots[i].key == k && (now - slots[i].ts) < 10000UL) {
       return;
     }
   }
   slots[nextSlot].key = k;
   slots[nextSlot].ts = now;
-  nextSlot = (nextSlot + 1) % 6;
+  nextSlot = (nextSlot + 1) % 24;
   logPrintf("[DNS-PROBE] Q:%s (T:%u) -> %s", qname.c_str(), qtype, action);
 }
 
 void syncDnsServerMode(bool forceStop) {
   DnsMode target = DNS_MODE_OFF;
   if (!forceStop) {
-    if (sta_enabled) {
+    bool effective_sta_en = sta_enabled && !pending_sta_forget &&
+                            !(pending_sta_mode_change && !pending_sta_mode_val);
+    if (effective_sta_en) {
       target = (sta_ssid.length() > 0 && WiFi.status() == WL_CONNECTED) ? DNS_MODE_OFF : DNS_MODE_CAPTIVE;
     } else {
       target = DNS_MODE_5G_PROBE;
@@ -2332,6 +2350,7 @@ void syncDnsServerMode(bool forceStop) {
   if (dns_mode == DNS_MODE_CAPTIVE) {
     logMessage("[CAPTIVE] Da khoi chay Captive DNS Server (Cho nhap Wi-Fi).");
   } else {
+    refreshActiveLeases5GGraceWindow();
     logMessage("[5G-DNS] Bat Smart Probe DNS cong 53 (7.5s Grace TTL=1s -> Sau do SERVFAIL kich hoat Poor network/5G).");
   }
 }
@@ -2402,17 +2421,23 @@ void handleDnsUdp() {
       answerA = (qclass == 1 && (qtype == 1 || qtype == 255));
     } else {
       bool isLocalName = hostMatchesDomain(qname, "esp32.local");
+      bool isProbe = isProbeHostname(qname);
       bool inGrace = isLocalName || isClientIn5GGraceWindow(ipToU32(dnsUdp.remoteIP()));
-      if (isLocalName || (isProbeHostname(qname) && inGrace)) {
+      if (isLocalName || (isProbe && inGrace)) {
         ttlSec = 1;
         rcode = 0;
         answerA = (qclass == 1 && (qtype == 1 || qtype == 255));
-        String act = answerA ? (ap_ip_str + "(GRACE)") : String("NODATA");
-        logDnsProbeThrottled(qname, qtype, act.c_str());
+        if (answerA) {
+          String act = ap_ip_str + "(GRACE)";
+          logDnsProbeThrottled(qname, qtype, act.c_str());
+        }
       } else {
         rcode = 2; // SERVFAIL (tranh bi cache NXDOMAIN khi chuyen 5G)
         answerA = false;
-        logDnsProbeThrottled(qname, qtype, isProbeHostname(qname) ? "SERVFAIL(5G)" : "SERVFAIL");
+        // Chi log nhom probe he thong (tranh spam hang loat domain app nen)
+        if (isProbe && qtype != 28 && qtype != 65) {
+          logDnsProbeThrottled(qname, qtype, "SERVFAIL(5G)");
+        }
       }
     }
 
@@ -2460,6 +2485,17 @@ static char g_dhcpLogRing[DHCP_LOG_RING_SIZE][192];
 static uint8_t g_dhcpLogHead = 0;
 static uint8_t g_dhcpLogTail = 0;
 
+void refreshActiveLeases5GGraceWindow() {
+  uint32_t now_ms = millis();
+  portENTER_CRITICAL(&g_dhcpMux);
+  for (int i = 0; i < MAX_CUSTOM_DHCP_LEASES; i++) {
+    if (g_dhcpLeases[i].used && g_dhcpLeases[i].active) {
+      g_dhcpLeases[i].grace_start_ms = now_ms;
+    }
+  }
+  portEXIT_CRITICAL(&g_dhcpMux);
+}
+
 bool isClientIn5GGraceWindow(uint32_t ip_u32) {
   if (ip_u32 == 0) return false;
   uint32_t now_ms = millis();
@@ -2467,7 +2503,7 @@ bool isClientIn5GGraceWindow(uint32_t ip_u32) {
   portENTER_CRITICAL(&g_dhcpMux);
   for (int i = 0; i < MAX_CUSTOM_DHCP_LEASES; i++) {
     if (g_dhcpLeases[i].used && g_dhcpLeases[i].active && g_dhcpLeases[i].ip_u32 == ip_u32) {
-      if ((uint32_t)(now_ms - g_dhcpLeases[i].start_ms) < 7500UL) {
+      if ((uint32_t)(now_ms - g_dhcpLeases[i].grace_start_ms) < 7500UL) {
         inGrace = true;
       }
       break;
@@ -2866,6 +2902,7 @@ static void customDhcpRecvCb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
         L.confirmed = false;
         L.ip_u32 = chosenIp;
         L.start_ms = now_ms;
+        L.grace_start_ms = now_ms;
         L.ttl_ms = 30000UL; // Giu cho OFFER 30 giay
       }
     }
@@ -2898,6 +2935,7 @@ static void customDhcpRecvCb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
       L.confirmed = true;
       L.last_ip_u32 = targetIp;
       L.start_ms = now_ms;
+      L.grace_start_ms = now_ms;
       L.ttl_ms = 3600000UL; // 1 gio
       valid = true;
     }
@@ -3139,7 +3177,7 @@ void restoreGatewayServicesAfterOtaFail() {
   server.begin();
   startOrRefreshMdns();
 
-  if (WiFi.status() == WL_CONNECTED) {
+  if (sta_enabled && sta_ssid.length() > 0 && WiFi.status() == WL_CONNECTED) {
     napt_enabled = false;
     enableNapt();
     stopCaptiveDns();
@@ -3187,6 +3225,18 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
   } else if (event == ARDUINO_EVENT_WIFI_AP_STAIPASSIGNED) {
     // Su dung Custom Random DHCP Server nen log cap IP thuc te duoc xu ly tai flushCustomDhcpLogs()
   } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+    if (!sta_enabled || sta_ssid.length() == 0 || pending_sta_forget ||
+        (pending_sta_mode_change && !pending_sta_mode_val)) {
+      logMessage("[WIFI-STA] Bo qua STA_GOT_IP tre do Wi-Fi nguon da TAT hoac da xoa.");
+      stopStaConnecting();
+      sta_connected_state = false;
+      disableNapt();
+      if (!boot_wifi_initializing && !ota_downloading) {
+        syncDnsServerMode(false);
+      }
+      return;
+    }
+
     char buf[120];
     snprintf(buf, sizeof(buf), "[WIFI-STA] Da nhan IP: %s | Gateway: %s",
              WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str());
@@ -3237,11 +3287,7 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
     }
     disableNapt();
     if (!boot_wifi_initializing && !ota_downloading) {
-      if (sta_enabled) {
-        startCaptiveDns();
-      } else {
-        stopCaptiveDns();
-      }
+      syncDnsServerMode(false);
     }
     // Khong goi configureSoftApDhcp() o day de tranh restart DHCP lam rot ket noi cac thiet bi dang vao Wi-Fi AP
   }
@@ -3554,94 +3600,250 @@ void handleApiClearLogs() {
   server.send(200, "application/json", "{\"success\":true}");
 }
 
-// Quét nhanh Wi-Fi 2.4GHz và cập nhật bộ đệm JSON (dành cho BLE Console và Serial)
-String performWifiScanJson() {
-  if (WiFi.getMode() == WIFI_AP) {
-    WiFi.mode(WIFI_AP_STA);
-    delay(40);
+struct ScannedApEntry {
+  String ssid;
+  int32_t rssi;
+  uint8_t ch;
+  bool secure;
+};
+
+static const int MAX_SCAN_AP_RESULTS = 24;
+static ScannedApEntry g_scanResults[MAX_SCAN_AP_RESULTS];
+static int g_scanResultCount = 0;
+static bool scan_in_progress = false;
+static bool scan_channel_active = false;
+static bool scan_channel_retried = false;
+static uint8_t scan_cur_channel = 1;
+static unsigned long scan_dwell_until_ms = 0;
+static unsigned long scan_chan_start_ms = 0;
+
+static void clearScanAccumulator() {
+  for (int i = 0; i < MAX_SCAN_AP_RESULTS; i++) {
+    g_scanResults[i].ssid = String();
+    g_scanResults[i].rssi = -127;
+    g_scanResults[i].ch = 0;
+    g_scanResults[i].secure = false;
   }
-  if (WiFi.status() != WL_CONNECTED && WiFi.status() != WL_IDLE_STATUS) {
-    WiFi.disconnect(false);
-  }
-  logMessage("[SCAN] Dang thuc hien quet Wi-Fi 2.4GHz...");
-  int n = WiFi.scanNetworks(false, false, false, 40);
-  if (n >= 0) {
-    String json = "[";
-    for (int i = 0; i < n; i++) {
-      if (i > 0) json += ",";
-      String ssid = WiFi.SSID(i);
-      ssid.replace("\\", "\\\\");
-      ssid.replace("\"", "\\\"");
-      json += "{\"ssid\":\"" + ssid + "\",";
-      json += "\"rssi\":" + String(WiFi.RSSI(i)) + ",";
-      json += "\"ch\":" + String(WiFi.channel(i)) + ",";
-      json += "\"secure\":" + String(WiFi.encryptionType(i) != WIFI_AUTH_OPEN ? "true" : "false") + "}";
-    }
-    json += "]";
-    WiFi.scanDelete();
-    cached_scan_json = json;
-    last_scan_time = millis();
-    logPrintf("[SCAN] Quet xong! Tim thay %d mang Wi-Fi.", n);
-    return json;
-  }
-  return cached_scan_json.length() > 2 ? cached_scan_json : "[]";
+  g_scanResultCount = 0;
 }
 
-// API: Quét các mạng Wi-Fi 2.4GHz xung quanh bất đồng bộ (Non-blocking Async Scan cho Web Portal)
-void handleApiScan() {
-  bool force = server.hasArg("force") || server.hasArg("refresh");
-  if (!force && cached_scan_json.length() > 5 && (millis() - last_scan_time < 20000)) {
-    server.send(200, "application/json", cached_scan_json);
-    return;
-  }
+void cancelAsyncWifiScan() {
+  scan_in_progress = false;
+  scan_channel_active = false;
+  scan_channel_retried = false;
+  WiFi.scanDelete();
+  clearScanAccumulator();
+}
 
-  int16_t scanStatus = WiFi.scanComplete();
-  if (scanStatus == WIFI_SCAN_RUNNING) {
-    server.send(200, "application/json", "{\"status\":\"scanning\"}");
-    return;
-  }
+static void collectCompletedScanResults(int16_t count) {
+  for (int i = 0; i < count; i++) {
+    String ssid = WiFi.SSID(i);
+    if (ssid.length() == 0) continue;
+    int32_t rssi = WiFi.RSSI(i);
+    uint8_t ch = (uint8_t)WiFi.channel(i);
+    bool sec = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
 
-  if (scanStatus >= 0) {
-    String json = "[";
-    for (int i = 0; i < scanStatus; i++) {
-      if (i > 0) json += ",";
-      String ssid = WiFi.SSID(i);
-      ssid.replace("\\", "\\\\");
-      ssid.replace("\"", "\\\"");
-      json += "{\"ssid\":\"" + ssid + "\",";
-      json += "\"rssi\":" + String(WiFi.RSSI(i)) + ",";
-      json += "\"ch\":" + String(WiFi.channel(i)) + ",";
-      json += "\"secure\":" + String(WiFi.encryptionType(i) != WIFI_AUTH_OPEN ? "true" : "false") + "}";
+    int existIdx = -1;
+    int weakestIdx = 0;
+    for (int k = 0; k < g_scanResultCount; k++) {
+      if (g_scanResults[k].ssid == ssid) {
+        existIdx = k;
+        break;
+      }
+      if (g_scanResults[k].rssi < g_scanResults[weakestIdx].rssi) {
+        weakestIdx = k;
+      }
     }
-    json += "]";
-    WiFi.scanDelete();
-    cached_scan_json = json;
-    last_scan_time = millis();
-    logPrintf("[SCAN] Quet xong! Tim thay %d mang Wi-Fi.", scanStatus);
-    server.sendHeader("Connection", "close");
-  server.send(200, "application/json", json);
-    return;
+    if (existIdx >= 0) {
+      if (rssi > g_scanResults[existIdx].rssi) {
+        g_scanResults[existIdx].rssi = rssi;
+        g_scanResults[existIdx].ch = ch;
+        g_scanResults[existIdx].secure = sec;
+      }
+    } else if (g_scanResultCount < MAX_SCAN_AP_RESULTS) {
+      g_scanResults[g_scanResultCount].ssid = ssid;
+      g_scanResults[g_scanResultCount].rssi = rssi;
+      g_scanResults[g_scanResultCount].ch = ch;
+      g_scanResults[g_scanResultCount].secure = sec;
+      g_scanResultCount++;
+    } else if (rssi > g_scanResults[weakestIdx].rssi) {
+      g_scanResults[weakestIdx].ssid = ssid;
+      g_scanResults[weakestIdx].rssi = rssi;
+      g_scanResults[weakestIdx].ch = ch;
+      g_scanResults[weakestIdx].secure = sec;
+    }
   }
+  WiFi.scanDelete();
+}
 
-  // Khởi động tiến trình quét mới bất đồng bộ
+static String buildSortedScanJson() {
+  for (int i = 1; i < g_scanResultCount; i++) {
+    ScannedApEntry key = g_scanResults[i];
+    int j = i - 1;
+    while (j >= 0 && g_scanResults[j].rssi < key.rssi) {
+      g_scanResults[j + 1] = g_scanResults[j];
+      j--;
+    }
+    g_scanResults[j + 1] = key;
+  }
+  String json = "[";
+  for (int i = 0; i < g_scanResultCount; i++) {
+    if (i > 0) json += ",";
+    String ssid = g_scanResults[i].ssid;
+    ssid.replace("\\", "\\\\");
+    ssid.replace("\"", "\\\"");
+    json += "{\"ssid\":\"" + ssid + "\",";
+    json += "\"rssi\":" + String(g_scanResults[i].rssi) + ",";
+    json += "\"ch\":" + String(g_scanResults[i].ch) + ",";
+    json += "\"secure\":" + String(g_scanResults[i].secure ? "true" : "false") + "}";
+  }
+  json += "]";
+  return json;
+}
+
+static void prepareRadioForWifiScan() {
   if (WiFi.getMode() == WIFI_AP) {
     WiFi.mode(WIFI_AP_STA);
     delay(30);
   }
-  if (WiFi.status() != WL_CONNECTED && WiFi.status() != WL_IDLE_STATUS) {
-    WiFi.disconnect(false);
+  if (WiFi.status() != WL_CONNECTED) {
+    stopStaConnecting();
+    delay(20);
   }
-  logMessage("[SCAN] Bat dau quet song Wi-Fi bat dong bo (Async Scan)...");
-  int16_t startResult = WiFi.scanNetworks(true, false, false, 40);
-  if (startResult == WIFI_SCAN_RUNNING || startResult >= 0) {
+}
+
+static String finalizeWifiScanResults() {
+  String json = buildSortedScanJson();
+  cached_scan_json = json;
+  last_scan_time = millis();
+  int foundCount = g_scanResultCount;
+  clearScanAccumulator();
+  logPrintf("[SCAN] Quet xong! Tim thay %d mang Wi-Fi (Giu song AP on dinh).", foundCount);
+  return json;
+}
+
+void handleWifiScanStep() {
+  if (!scan_in_progress || pending_ota || ota_downloading ||
+      pending_sta_mode_change || pending_sta_forget) {
+    return;
+  }
+
+  unsigned long now = millis();
+  if (!scan_channel_active) {
+    if ((long)(now - scan_dwell_until_ms) < 0) {
+      return;
+    }
+    if (scan_cur_channel == 1 && !scan_channel_retried) {
+      prepareRadioForWifiScan();
+    }
+    if (scan_cur_channel > 13) {
+      finalizeWifiScanResults();
+      scan_in_progress = false;
+      scan_channel_active = false;
+      scan_channel_retried = false;
+      return;
+    }
+    int16_t startRes = WiFi.scanNetworks(true, false, false, 45, scan_cur_channel);
+    if (startRes == WIFI_SCAN_RUNNING || startRes >= 0) {
+      scan_channel_active = true;
+      scan_chan_start_ms = now;
+    } else {
+      WiFi.scanDelete();
+      if (!scan_channel_retried) {
+        scan_channel_retried = true;
+        scan_dwell_until_ms = now + 100;
+      } else {
+        scan_channel_retried = false;
+        scan_cur_channel++;
+        scan_dwell_until_ms = (scan_cur_channel > 13) ? now : (now + 120);
+      }
+    }
+    return;
+  }
+
+  int16_t st = WiFi.scanComplete();
+  if (st == WIFI_SCAN_RUNNING) {
+    if ((now - scan_chan_start_ms) > 1000UL) {
+      WiFi.scanDelete();
+      scan_channel_active = false;
+      scan_channel_retried = false;
+      scan_cur_channel++;
+      scan_dwell_until_ms = (scan_cur_channel > 13) ? now : (now + 120);
+    }
+    return;
+  }
+
+  if (st == WIFI_SCAN_FAILED) {
+    WiFi.scanDelete();
+    scan_channel_active = false;
+    if (!scan_channel_retried) {
+      scan_channel_retried = true;
+      scan_dwell_until_ms = now + 100;
+    } else {
+      scan_channel_retried = false;
+      scan_cur_channel++;
+      scan_dwell_until_ms = (scan_cur_channel > 13) ? now : (now + 120);
+    }
+    return;
+  }
+
+  collectCompletedScanResults(st);
+  scan_channel_active = false;
+  scan_channel_retried = false;
+  scan_cur_channel++;
+  scan_dwell_until_ms = (scan_cur_channel > 13) ? millis() : (millis() + 120);
+}
+
+// Quét nhanh Wi-Fi 2.4GHz từng kênh và cập nhật bộ đệm JSON (dành cho BLE Console và Serial)
+String performWifiScanJson() {
+  cancelAsyncWifiScan();
+  prepareRadioForWifiScan();
+  logMessage("[SCAN] Dang thuc hien quet Wi-Fi 2.4GHz tung kenh (Ch 1-13)...");
+  for (uint8_t ch = 1; ch <= 13; ch++) {
+    int n = WiFi.scanNetworks(false, false, false, 45, ch);
+    collectCompletedScanResults(n);
+    for (int r = 0; r < 11; r++) {
+      server.handleClient();
+      flushCustomDhcpLogs();
+      delay(10);
+    }
+  }
+  return finalizeWifiScanResults();
+}
+
+// API: Quét các mạng Wi-Fi 2.4GHz xung quanh từng kênh bất đồng bộ (giữ SoftAP không bị rớt beacon)
+void handleApiScan() {
+  if (scan_in_progress) {
+    server.sendHeader("Connection", "close");
     server.send(200, "application/json", "{\"status\":\"scanning\"}");
-  } else {
-    server.send(200, "application/json", cached_scan_json.length() > 2 ? cached_scan_json : "[]");
+    return;
   }
+
+  bool force = server.hasArg("force") || server.hasArg("refresh");
+  bool hasFreshCache = (last_scan_time > 0 && (millis() - last_scan_time < 20000));
+  if (!force && hasFreshCache) {
+    server.sendHeader("Connection", "close");
+    server.send(200, "application/json", cached_scan_json);
+    return;
+  }
+
+  WiFi.scanDelete();
+  clearScanAccumulator();
+  scan_in_progress = true;
+  scan_channel_active = false;
+  scan_channel_retried = false;
+  scan_cur_channel = 1;
+  unsigned long delayStart = (pending_sta_forget || pending_sta_mode_change) ? 260UL : 20UL;
+  scan_dwell_until_ms = millis() + delayStart;
+
+  logMessage("[SCAN] Bat dau quet song Wi-Fi tung kenh (Ch 1-13, giu song AP on dinh)...");
+  server.sendHeader("Connection", "close");
+  server.send(200, "application/json", "{\"status\":\"scanning\"}");
 }
 
 // API: Xóa hoàn toàn cấu hình Wi-Fi nguồn khỏi Flash NVS (Giữ nguyên trạng thái bật/tắt STA và sóng SoftAP)
 void handleApiForgetSta() {
+  cancelAsyncWifiScan();
   sta_ssid = "";
   sta_password = "";
 
@@ -3661,6 +3863,9 @@ void handleApiForgetSta() {
 // API: Tiếp nhận cấu hình Wi-Fi nguồn (STA) và bắt đầu kết nối thử (chỉ lưu Flash khi kết nối thành công)
 void handleApiSaveSta() {
   if (server.hasArg("ssid")) {
+    cancelAsyncWifiScan();
+    pending_sta_forget = false;
+    pending_sta_mode_change = false;
     sta_ssid = server.arg("ssid");
     sta_password = server.arg("pass");
     sta_ssid.trim();
@@ -3677,6 +3882,7 @@ void handleApiSaveSta() {
 
     triggerStaConnect();
 
+    server.sendHeader("Connection", "close");
     server.send(200, "application/json", "{\"success\":true,\"msg\":\"ESP32 dang thu ket noi vao Wi-Fi: " + sta_ssid + "! Thong tin se duoc luu khi ket noi thanh cong.\"}");
   } else {
     server.send(400, "application/json", "{\"error\":\"Thieu SSID\"}");
@@ -3686,6 +3892,7 @@ void handleApiSaveSta() {
 // API: Bật / tắt chế độ Wi-Fi nguồn (Internet Repeater vs Mạng nội bộ Offline dùng 5G)
 void handleApiSetStaMode() {
   if (server.hasArg("enabled")) {
+    cancelAsyncWifiScan();
     String val = server.arg("enabled");
     bool target_en = (val == "1" || val.equalsIgnoreCase("true"));
 
@@ -3693,10 +3900,13 @@ void handleApiSetStaMode() {
     prefs.putBool("sta_en", target_en);
     prefs.end();
 
+    pending_sta_forget = false;
+    sta_enabled = target_en; // Chốt ngay trong RAM để chặn sự kiện STA_GOT_IP trễ
     pending_sta_mode_change = true;
     pending_sta_mode_val = target_en;
-    sta_mode_change_time = millis() + 300; // Hoãn 300ms để WebServer gửi xong HTTP 200 JSON tới trình duyệt
+    sta_mode_change_time = millis() + 250; // Hoãn 250ms để WebServer gửi xong HTTP 200 JSON tới trình duyệt
 
+    server.sendHeader("Connection", "close");
     if (!target_en) {
       server.send(200, "application/json", "{\"success\":true,\"sta_enabled\":false,\"msg\":\"Da chuyen sang che do MANG NOI BO! Dien thoai ket noi se tu dong dung 5G de truy cap Internet.\"}");
     } else {
@@ -4070,6 +4280,7 @@ void setup() {
   WiFi.enableIPv6(false); // Tat IPv6 de tranh tra ve ban ghi AAAA gay loi connect khong co route
   WiFi.setSleep(false);
   esp_wifi_set_ps(WIFI_PS_NONE);
+  WiFi.setScanActiveMinTime(25); // Giu dwell scan toi thieu <= max_ms_per_chan (35-45ms) de tranh rot beacon AP
 
   // Đăng ký bắt sự kiện Wi-Fi ngắt kết nối
   WiFi.onEvent(onWiFiEvent);
@@ -4283,7 +4494,7 @@ void loop() {
   }
 
   // 6. Giám sát trạng thái kết nối STA định kỳ mỗi 3 giây (Chuẩn v1.3.8)
-  if (millis() - last_sta_check > 3000) {
+  if (!pending_sta_mode_change && !pending_sta_forget && !scan_in_progress && (millis() - last_sta_check > 3000)) {
     last_sta_check = millis();
 
     if (sta_enabled && sta_ssid.length() > 0) {
@@ -4302,11 +4513,7 @@ void loop() {
         if (napt_enabled) {
           logMessage("[LOOP] STA mat ket noi! Tat NAPT va bat Captive Portal.");
           disableNapt();
-          if (sta_enabled) {
-            startCaptiveDns();
-          } else {
-            stopCaptiveDns();
-          }
+          syncDnsServerMode(false);
           configureSoftApDhcp(false);
         }
       }
@@ -4345,6 +4552,9 @@ void loop() {
     startOrRefreshMdns();
     logMessage("[STA] Da ngat ket noi Wi-Fi nguon cu (Giu nguyen SoftAP & che do STA).");
   }
+
+  // 6b3. Quét Wi-Fi bất đồng bộ từng kênh (Ch 1-13) với thời gian nghỉ giữ beacon SoftAP
+  handleWifiScanStep();
 
   // 6c. Xử lý kiểm tra OTA bất đồng bộ trong loopTask (tái sử dụng stack, không tốn thêm 8KB heap)
   if (ota_check_state == OTA_CHECK_REQUESTED) {

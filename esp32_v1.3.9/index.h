@@ -1254,7 +1254,9 @@ function renderWifiList(networks) {
   list.innerHTML = html;
 }
 
-function scanWifi(force) {
+function scanWifi(force, retriesLeft, pollCount) {
+  if (retriesLeft === undefined) retriesLeft = 2;
+  if (pollCount === undefined) pollCount = 0;
   var btn = document.getElementById('scanBtn');
   var list = document.getElementById('wifiScanResults');
   btn.innerText = currentLang === 'en' ? 'Scanning...' : 'Đang quét...';
@@ -1265,10 +1267,18 @@ function scanWifi(force) {
     .then(function(res) { return res.json(); })
     .then(function(data) {
       if (data && data.status === 'scanning') {
+        if (pollCount >= 14) {
+          btn.innerText = currentLang === 'en' ? '🔍 Rescan' : '🔍 Quét lại';
+          btn.disabled = false;
+          list.innerHTML = '<div style="font-size:11px;color:#f59e0b;text-align:center;padding:12px;">' +
+            (currentLang === 'en' ? 'Scan timed out. Click "Rescan".' : 'Quá thời gian quét Wi-Fi. Hãy bấm "Quét lại".') +
+            '</div>';
+          return;
+        }
         list.innerHTML = '<div style="font-size:11px;color:#38bdf8;text-align:center;padding:12px;">' + 
-          (currentLang === 'en' ? 'Scanning Wi-Fi... Please wait ~2s.' : 'Đang quét sóng Wi-Fi... Vui lòng đợi ~2 giây...') + 
+          (currentLang === 'en' ? 'Scanning Wi-Fi... Please wait ~2-3s.' : 'Đang quét sóng Wi-Fi từng kênh... Vui lòng đợi ~2-3 giây...') + 
           '</div>';
-        setTimeout(function() { scanWifi(false); }, 1500);
+        setTimeout(function() { scanWifi(false, retriesLeft, pollCount + 1); }, 1200);
         return;
       }
       var networks = Array.isArray(data) ? data : [];
@@ -1277,6 +1287,10 @@ function scanWifi(force) {
       renderWifiList(networks);
     })
     .catch(function(err) {
+      if (retriesLeft > 0 && pollCount < 14) {
+        setTimeout(function() { scanWifi(false, retriesLeft - 1, pollCount + 1); }, 1500);
+        return;
+      }
       btn.innerText = currentLang === 'en' ? '🔍 Rescan' : '🔍 Quét lại';
       btn.disabled = false;
       list.innerHTML = '<div style="font-size:11px;color:#f87171;text-align:center;padding:12px;">' + (currentLang === 'en' ? 'Error scanning Wi-Fi networks!' : 'Lỗi khi tải danh sách Wi-Fi!') + '</div>';

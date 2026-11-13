@@ -2473,6 +2473,41 @@ static bool appendOptU32(uint8_t *opts, size_t maxLen, size_t *idx, uint8_t code
   return appendOptBytes(opts, maxLen, idx, code, 4, &netVal);
 }
 
+static uint8_t maskU32ToPrefixLen(uint32_t mask_u32) {
+  uint8_t bits = 0;
+  for (int b = 31; b >= 0; b--) {
+    if ((mask_u32 & (1UL << b)) == 0) break;
+    bits++;
+  }
+  return bits;
+}
+
+static size_t appendOption121SubnetOnLink(uint8_t *buf, size_t maxLen, uint32_t gw_u32, uint32_t mask_u32) {
+  uint8_t prefix = maskU32ToPrefixLen(mask_u32);
+  if (prefix == 0 || prefix > 32) prefix = 24;
+  uint32_t net_u32 = gw_u32 & mask_u32;
+  uint8_t sigBytes = (uint8_t)((prefix + 7U) / 8U);
+  size_t need = (size_t)(1U + sigBytes + 4U) + 9U; // Subnet route + /32 host route
+  if (need > maxLen) return 0;
+
+  size_t pos = 0;
+  // Route 1: Local subnet -> 0.0.0.0 (on-link interface, khong dat 0.0.0.0/0 de giu 5G)
+  buf[pos++] = prefix;
+  for (uint8_t i = 0; i < sigBytes; i++) {
+    buf[pos++] = (uint8_t)((net_u32 >> (24U - i * 8U)) & 0xFFU);
+  }
+  buf[pos++] = 0; buf[pos++] = 0; buf[pos++] = 0; buf[pos++] = 0;
+
+  // Route 2: Gateway /32 -> 0.0.0.0 (dam bao iOS biet ro 10.51.31.254 nam tren Wi-Fi)
+  buf[pos++] = 32;
+  buf[pos++] = (uint8_t)((gw_u32 >> 24) & 0xFFU);
+  buf[pos++] = (uint8_t)((gw_u32 >> 16) & 0xFFU);
+  buf[pos++] = (uint8_t)((gw_u32 >> 8) & 0xFFU);
+  buf[pos++] = (uint8_t)(gw_u32 & 0xFFU);
+  buf[pos++] = 0; buf[pos++] = 0; buf[pos++] = 0; buf[pos++] = 0;
+  return pos;
+}
+
 static void customDhcpSendReply(struct udp_pcb *pcb, struct netif *lwip_ap,
                                 const CustomDhcpPacket *rx, const CustomDhcpConfig *cfg,
                                 uint8_t msgType, uint32_t yiaddr_u32, bool omitRouterDns) {
@@ -2514,6 +2549,13 @@ static void customDhcpSendReply(struct udp_pcb *pcb, struct netif *lwip_ap,
         appendOptBytes(tx.options, sizeof(tx.options), &optIdx, 6, 8, dnsArr);
       } else {
         appendOptBytes(tx.options, sizeof(tx.options), &optIdx, 6, 4, dnsArr);
+      }
+    }
+    if (omitRouterDns) {
+      uint8_t opt121[24];
+      size_t opt121Len = appendOption121SubnetOnLink(opt121, sizeof(opt121), cfg->gw_u32, cfg->mask_u32);
+      if (opt121Len > 0) {
+        appendOptBytes(tx.options, sizeof(tx.options), &optIdx, 121, (uint8_t)opt121Len, opt121);
       }
     }
   }
@@ -2676,7 +2718,7 @@ static void customDhcpRecvCb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
       customDhcpSendReply(pcb, lwip_ap, &rx, &cfg, 2, chosenIp, omitForClient); // DHCPOFFER
       customDhcpPushLog("[DHCP-OFFER] %s | MAC:%s | Host:%s | Opt55:%s | %s",
                         ipBuf, macStr, hostName[0] ? hostName : "-",
-                        opt55Str[0] ? opt55Str : "-", omitForClient ? "Apple-NoGW" : "Full-GW/DNS");
+                        opt55Str[0] ? opt55Str : "-", omitForClient ? "Apple-Opt121" : "Full-GW/DNS");
     }
   } else if (msgType == 3) { // DHCPREQUEST
     if (hasSrvId && srvId != cfg.gw_u32) return; // Danh cho DHCP server khac
@@ -2707,7 +2749,7 @@ static void customDhcpRecvCb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
       customDhcpSendReply(pcb, lwip_ap, &rx, &cfg, 5, targetIp, omitForClient); // DHCPACK
       customDhcpPushLog("[WIFI-AP] Da cap IP ngau nhien: %s cho %s (Host:%s | %s) thanh cong!",
                         ipBuf, macStr, hostName[0] ? hostName : "-",
-                        omitForClient ? "5G-NoGW" : "5G-Probe4.5s");
+                        omitForClient ? "5G-Opt121" : "5G-Probe4.5s");
     } else {
       customDhcpSendReply(pcb, lwip_ap, &rx, &cfg, 6, 0, false); // DHCPNAK -> Ep DHCPDISCOVER cap IP ngau nhien
       customDhcpPushLog("[DHCP-NAK] MAC:%s xin IP cu %s -> Tu choi (NAK) de cap IP ngau nhien moi!",
@@ -2947,8 +2989,41 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
 //                         CÁC XỬ LÝ HTTP WEB SERVER
 // =========================================================================
 
+void startOrRefreshMdns() {
+  MDNS.end();
+  delay(80);
+  if (MDNS.begin("esp32")) {
+    MDNS.setInstanceName("ESP32 Gateway");
+    MDNS.addService("http", "tcp", 80);
+    esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    if (ap_netif != NULL) {
+      mdns_netif_action(ap_netif, (mdns_event_actions_t)(MDNS_EVENT_ENABLE_IP4 | MDNS_EVENT_ANNOUNCE_IP4));
+    }
+    logMessage("[MDNS] Ten mien cuc bo: http://esp32.local/ da san sang!");
+  } else {
+    logMessage("[MDNS-LOI] Khong khoi tao duoc mDNS esp32.local!");
+  }
+}
+
+static void logHttpLocalThrottled(const IPAddress &cliIp, const String &host, const String &uri) {
+  static String lastKey = "";
+  static unsigned long lastTs = 0;
+  String k = cliIp.toString() + "|" + uri;
+  unsigned long now = millis();
+  if (k == lastKey && (now - lastTs) < 2000UL) return;
+  lastKey = k;
+  lastTs = now;
+  logPrintf("[HTTP-LOCAL] Client:%s Host:%s URI:%s -> 200 Portal",
+            cliIp.toString().c_str(), host.length() ? host.c_str() : "-", uri.c_str());
+}
+
 void handleRoot() {
+  logHttpLocalThrottled(server.client().remoteIP(), server.hostHeader(), server.uri());
   server.send_P(200, "text/html", INDEX_HTML);
+}
+
+void handleFastIcon204() {
+  server.send(204, "text/plain", "");
 }
 
 static void logHttpProbeThrottled(const String &host, const String &uri, const String &ua, int statusCode) {
@@ -2997,11 +3072,21 @@ static bool trySendProbeSuccessResponse(const String &uri, const String &host) {
 void handleCaptiveRedirect() {
   String uri = server.uri();
   String host = server.hostHeader();
+  String hostNoPort = host;
+  int colonIdx = hostNoPort.indexOf(':');
+  if (colonIdx >= 0) hostNoPort = hostNoPort.substring(0, colonIdx);
+  hostNoPort.toLowerCase();
   String ua = server.hasHeader("User-Agent") ? server.header("User-Agent") : "";
-  bool isLocalHost = (host.length() == 0 || host == ap_ip_str || host == WiFi.localIP().toString() || host.indexOf("esp32.local") >= 0);
+  bool isLocalHost = (hostNoPort.length() == 0 || hostNoPort == ap_ip_str ||
+                      hostNoPort == WiFi.localIP().toString() || hostNoPort.indexOf("esp32.local") >= 0);
   bool isProbeUri = (uri.indexOf("generate_204") >= 0 || uri.indexOf("gen_204") >= 0 ||
                      uri.indexOf("hotspot-detect") >= 0 || uri.indexOf("connecttest") >= 0 ||
                      uri.indexOf("ncsi") >= 0 || uri.indexOf("success.txt") >= 0);
+
+  if (isLocalHost && (uri.indexOf("favicon.ico") >= 0 || uri.indexOf("apple-touch-icon") >= 0)) {
+    server.send(204, "text/plain", "");
+    return;
+  }
 
   // 1. Khi CÓ kết nối Internet Wi-Fi nguồn: tra 204/Success binh thuong
   if (sta_enabled && WiFi.status() == WL_CONNECTED) {
@@ -3879,6 +3964,9 @@ void setup() {
 
   // Bước 8: Đăng ký các Endpoint cho Web Server
   server.on("/", HTTP_GET, handleRoot);
+  server.on("/favicon.ico", HTTP_GET, handleFastIcon204);
+  server.on("/apple-touch-icon.png", HTTP_GET, handleFastIcon204);
+  server.on("/apple-touch-icon-precomposed.png", HTTP_GET, handleFastIcon204);
   server.on("/api/status", HTTP_GET, handleApiStatus);
   server.on("/api/power_boost", HTTP_POST, handleApiPowerBoost);
   server.on("/api/save_ble", HTTP_POST, handleApiSaveBle);
@@ -3914,11 +4002,8 @@ void setup() {
   server.begin();
   logMessage("[WEB] Web Server cong 80 da san sang!");
 
-  // Bước 8b: Khởi tạo mDNS (http://esp32.local/)
-  if (MDNS.begin("esp32")) {
-    MDNS.addService("http", "tcp", 80);
-    logMessage("[MDNS] Ten mien cuc bo: http://esp32.local/ da san sang!");
-  }
+  // Bước 8b: Khởi tạo mDNS (http://esp32.local/) trên cả SoftAP lẫn STA
+  startOrRefreshMdns();
 
   // Bước 9: Kết nối vào Wi-Fi nguồn (STA) nếu được bật
   if (sta_enabled && sta_ssid.length() > 0) {
@@ -4053,12 +4138,14 @@ void loop() {
       disableNapt();
       syncDnsServerMode(false);
       configureSoftApDhcp(false);
+      startOrRefreshMdns();
       delay(50);
       logMessage("[MODE] Da TAT Wi-Fi nguon -> Che do MANG NOI BO (Dien thoai dung 5G).");
     } else {
       triggerStaConnect();
       syncDnsServerMode(false);
       configureSoftApDhcp(false);
+      startOrRefreshMdns();
       logMessage("[MODE] Da BAT Wi-Fi nguon -> Dang ket noi Internet...");
     }
   }

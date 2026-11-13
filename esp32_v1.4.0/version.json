@@ -1,5 +1,5 @@
 {
   "version": "1.4.0",
-  "url": "https://cdn.jsdelivr.net/gh/silversymphony/esp32-firmware@0822393/esp32_v1.4.0/esp32_v1.4.0.ino.bin",
-  "changelog": "Bản phát hành v1.4.0: Custom Random DHCP Server (UDP 67) hỗ trợ đầy đủ Subnet /22 & < 60 IP; Smart Probe DNS + HTTP 204 & mDNS esp32.local khi dùng 5G; ưu tiên kết nối STA trước khi phát SoftAP (8s timeout); giải phóng RAM BLE & tạm ngắt SoftAP khi tải/ghi Flash OTA giúp nâng cấp ổn định."
+  "url": "https://cdn.jsdelivr.net/gh/silversymphony/esp32-firmware@ae978dc/esp32_v1.4.0/esp32_v1.4.0.ino.bin",
+  "changelog": "Bản phát hành v1.4.0: Giữ nguyên chế độ STA & sóng SoftAP khi xóa Wi-Fi nguồn; kéo dài Grace Window 5G lên 7.5s; giải phóng mDNS/NAPT/BLE giúp kiểm tra & nạp OTA ổn định sau khi đổi Wi-Fi mà không cần reboot."
 }

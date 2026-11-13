@@ -147,11 +147,73 @@ String cached_scan_json = "[]";
 unsigned long last_scan_time = 0;
 
 // Bộ máy trạng thái kết nối Wi-Fi nguồn (Non-blocking STA Reconnect State Machine)
+#include <WiFiUdp.h>
+#include <lwip/udp.h>
+#include <lwip/etharp.h>
+#include <lwip/netif.h>
+#include <lwip/tcpip.h>
+#include <esp_netif_net_stack.h>
+
 enum StaConnState {
   STA_STATE_IDLE,       // Nghỉ ngơi, không quét kênh ngầm, radio 100% dành trọn cho SoftAP
   STA_STATE_CONNECTING, // Đang trong cửa sổ kết nối thử nghiệm ngắn (tối đa 4 giây)
   STA_STATE_CONNECTED   // Đã kết nối thành công vào Wi-Fi nguồn
 };
+
+enum DnsMode {
+  DNS_MODE_OFF = 0,
+  DNS_MODE_CAPTIVE = 1,
+  DNS_MODE_5G_PROBE = 2
+};
+
+#pragma pack(push, 1)
+struct CustomDhcpPacket {
+  uint8_t  op;
+  uint8_t  htype;
+  uint8_t  hlen;
+  uint8_t  hops;
+  uint32_t xid;
+  uint16_t secs;
+  uint16_t flags;
+  uint32_t ciaddr;
+  uint32_t yiaddr;
+  uint32_t siaddr;
+  uint32_t giaddr;
+  uint8_t  chaddr[16];
+  uint8_t  sname[64];
+  uint8_t  file[128];
+  uint8_t  magic[4];
+  uint8_t  options[308];
+};
+#pragma pack(pop)
+
+#define MAX_CUSTOM_DHCP_LEASES 60
+#define DHCP_LOG_RING_SIZE 16
+
+struct CustomDhcpLease {
+  bool     used;
+  bool     active;
+  bool     confirmed;
+  uint8_t  mac[6];
+  uint32_t ip_u32;
+  uint32_t last_ip_u32;
+  uint32_t start_ms;
+  uint32_t ttl_ms;
+  uint32_t decline_until_ms;
+};
+
+struct CustomDhcpConfig {
+  bool     enabled;
+  uint32_t start_u32;
+  uint32_t end_u32;
+  uint32_t gw_u32;
+  uint32_t mask_u32;
+  uint32_t dns1_u32;
+  uint32_t dns2_u32;
+  bool     offer_router;
+  bool     offer_dns;
+};
+
 StaConnState sta_conn_state = STA_STATE_IDLE;
 unsigned long sta_connect_start_time = 0;
 unsigned long sta_next_retry_time = 0;
@@ -192,14 +254,19 @@ bool tx_power_boost = false;
 bool ble_enabled = true;
 uint32_t ble_pin = 123456; // Mã PIN mặc định: 123456
 
-// Web Server & Captive DNS Server
+// Web Server & Unified DNS Server (Captive Portal / Smart 5G Probe)
 WebServer server(80);
-DNSServer dnsServer;
-const byte DNS_PORT = 53;
+WiFiUDP dnsUdp;
+const uint16_t DNS_PORT = 53;
+DnsMode dns_mode = DNS_MODE_OFF;
 
 // Trạng thái vận hành
 bool napt_enabled = false;
 bool dns_captive_running = false;
+void syncDnsServerMode(bool forceStop = false);
+void handleDnsUdp();
+void flushCustomDhcpLogs();
+void releaseCustomDhcpLease(const uint8_t *mac);
 void startDnsProxy();
 void stopDnsProxy();
 void handleDnsProxy();
@@ -1636,10 +1703,7 @@ bool executeOtaDownload(const String &dlUrl) {
 
   WiFi.scanDelete();
   cached_scan_json = "[]";
-  if (dns_captive_running) {
-    dnsServer.stop();
-    dns_captive_running = false;
-  }
+  syncDnsServerMode(true);
   delay(100);
 
   esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
@@ -2001,200 +2065,772 @@ void disableNapt() {
   }
 }
 
-// Bật Captive Portal (chặn DNS để điện thoại tự nhảy popup)
-void startCaptiveDns() {
-  if (!sta_enabled) {
-    if (dns_captive_running) {
-      dnsServer.stop();
-      dns_captive_running = false;
+// =========================================================================
+//   UNIFIED DNS SERVER (CAPTIVE PORTAL + SMART 5G PROBE RESPONDER - PORT 53)
+// =========================================================================
+
+static bool hostMatchesDomain(const String &host, const char *domain) {
+  if (host.equalsIgnoreCase(domain)) return true;
+  String suffix = String(".") + domain;
+  return host.endsWith(suffix);
+}
+
+static bool isProbeHostname(const String &host) {
+  static const char * const PROBE_DOMAINS[] = {
+    "connectivitycheck.gstatic.com",
+    "connectivitycheck.android.com",
+    "clients1.google.com",
+    "clients2.google.com",
+    "clients3.google.com",
+    "clients4.google.com",
+    "www.google.com",
+    "play.googleapis.com",
+    "connect.rom.miui.com",
+    "captive.apple.com",
+    "www.apple.com",
+    "gsp1.apple.com",
+    "airport.us",
+    "ibook.info",
+    "itools.info",
+    "thinkdifferent.us",
+    "conn1.oppomobile.com",
+    "conn2.oppomobile.com",
+    "wifi.heytap.com",
+    "captive.heytap.com",
+    "wifi.vivo.com.cn",
+    "hicloud.com",
+    "connectivity.samsung.com",
+    "cloudfront.net",
+    "msftconnecttest.com",
+    "msftncsi.com",
+    "detectportal.firefox.com",
+    "esp32.local"
+  };
+  for (size_t i = 0; i < sizeof(PROBE_DOMAINS) / sizeof(PROBE_DOMAINS[0]); i++) {
+    if (hostMatchesDomain(host, PROBE_DOMAINS[i])) return true;
+  }
+  return false;
+}
+
+static void logDnsProbeThrottled(const String &qname, uint16_t qtype, const char *action) {
+  struct DnsLogSlot {
+    String key;
+    unsigned long ts;
+  };
+  static DnsLogSlot slots[6];
+  static uint8_t nextSlot = 0;
+  String k = qname + "#" + String(qtype);
+  unsigned long now = millis();
+  for (int i = 0; i < 6; i++) {
+    if (slots[i].key == k && (now - slots[i].ts) < 3000UL) {
+      return;
     }
+  }
+  slots[nextSlot].key = k;
+  slots[nextSlot].ts = now;
+  nextSlot = (nextSlot + 1) % 6;
+  logPrintf("[DNS-PROBE] Q:%s (T:%u) -> %s", qname.c_str(), qtype, action);
+}
+
+void syncDnsServerMode(bool forceStop) {
+  DnsMode target = DNS_MODE_OFF;
+  if (!forceStop) {
+    if (sta_enabled) {
+      target = (WiFi.status() == WL_CONNECTED) ? DNS_MODE_OFF : DNS_MODE_CAPTIVE;
+    } else {
+      target = DNS_MODE_5G_PROBE;
+    }
+  }
+
+  if (target == dns_mode) {
+    dns_captive_running = (dns_mode != DNS_MODE_OFF);
     return;
   }
-  if (!dns_captive_running) {
-    IPAddress ap_ip;
-    ap_ip.fromString(ap_ip_str);
-    dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
-    dnsServer.start(DNS_PORT, "*", ap_ip);
-    dns_captive_running = true;
-    logMessage("[CAPTIVE] Da khoi chay Captive DNS Server (Cho nhap Wi-Fi).");
-  }
-}
 
-// Tắt Captive Portal khi đã có Internet
-void stopCaptiveDns() {
-  if (dns_captive_running) {
-    dnsServer.stop();
+  if (target == DNS_MODE_OFF) {
+    dnsUdp.stop();
+    dns_mode = DNS_MODE_OFF;
     dns_captive_running = false;
-    logMessage("[CAPTIVE] Da tat Captive DNS Server (Cho phep luu thong DNS binh thuong).");
+    logMessage("[DNS] Da tat UDP 53 DNS Server.");
+    return;
+  }
+
+  if (dns_mode == DNS_MODE_OFF) {
+    dnsUdp.stop();
+    if (!dnsUdp.begin(DNS_PORT)) {
+      logMessage("[DNS-LOI] Khong mo duoc UDP cong 53!");
+      return;
+    }
+  }
+
+  dns_mode = target;
+  dns_captive_running = true;
+  if (dns_mode == DNS_MODE_CAPTIVE) {
+    logMessage("[CAPTIVE] Da khoi chay Captive DNS Server (Cho nhap Wi-Fi).");
+  } else {
+    logMessage("[5G-DNS] Bat Smart Probe DNS cong 53 (Probe->GW TTL=2s | Real->SERVFAIL).");
+  }
+}
+
+void startCaptiveDns() {
+  syncDnsServerMode(false);
+}
+
+void stopCaptiveDns() {
+  syncDnsServerMode(false);
+}
+
+void handleDnsUdp() {
+  if (dns_mode == DNS_MODE_OFF) return;
+
+  IPAddress ap_ip;
+  ap_ip.fromString(ap_ip_str);
+
+  int handled = 0;
+  int pktSize = 0;
+  while (handled < 8 && (pktSize = dnsUdp.parsePacket()) > 0) {
+    handled++;
+    uint8_t req[512];
+    int toRead = pktSize > (int)sizeof(req) ? (int)sizeof(req) : pktSize;
+    int len = dnsUdp.read(req, toRead);
+    while (dnsUdp.available() > 0) dnsUdp.read();
+
+    if (len < 17) continue;
+    if ((req[2] & 0x80) != 0 || (req[2] & 0x78) != 0) continue; // Only standard DNS queries
+    uint16_t qdcount = ((uint16_t)req[4] << 8) | req[5];
+    if (qdcount == 0) continue;
+
+    String qname = "";
+    int pos = 12;
+    bool validName = true;
+    while (pos < len && req[pos] != 0) {
+      uint8_t labelLen = req[pos];
+      if ((labelLen & 0xC0) != 0 || labelLen == 0 || (pos + 1 + labelLen) >= len) {
+        validName = false;
+        break;
+      }
+      pos++;
+      if (qname.length() > 0) qname += '.';
+      for (uint8_t i = 0; i < labelLen; i++) {
+        char ch = (char)req[pos + i];
+        if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+        qname += ch;
+      }
+      pos += labelLen;
+    }
+    if (!validName || pos >= len || req[pos] != 0) continue;
+    pos++; // Skip root 0x00 label
+    if (pos + 4 > len) continue;
+
+    uint16_t qtype  = ((uint16_t)req[pos] << 8) | req[pos + 1];
+    uint16_t qclass = ((uint16_t)req[pos + 2] << 8) | req[pos + 3];
+    int qEnd = pos + 4;
+    int qLen = qEnd - 12;
+    if (12 + qLen + 16 > (int)sizeof(req)) continue;
+
+    bool answerA = false;
+    uint32_t ttlSec = 2;
+    uint8_t rcode = 0;
+
+    if (dns_mode == DNS_MODE_CAPTIVE) {
+      ttlSec = 10;
+      rcode = 0;
+      answerA = (qclass == 1 && (qtype == 1 || qtype == 255));
+    } else {
+      if (isProbeHostname(qname)) {
+        ttlSec = 2;
+        rcode = 0;
+        answerA = (qclass == 1 && (qtype == 1 || qtype == 255));
+        logDnsProbeThrottled(qname, qtype, answerA ? ap_ip_str.c_str() : "NODATA");
+      } else {
+        rcode = 2; // SERVFAIL (tranh bi cache NXDOMAIN khi chuyen 5G)
+        answerA = false;
+        logDnsProbeThrottled(qname, qtype, "SERVFAIL");
+      }
+    }
+
+    uint8_t resp[512];
+    memcpy(resp, req, 12);
+    resp[2] = 0x81 | (req[2] & 0x01); // QR=1, copy RD
+    resp[3] = 0x80 | (rcode & 0x0F); // RA=1, Z=0, RCODE
+    resp[4] = 0x00; resp[5] = 0x01;  // QDCOUNT = 1
+    resp[6] = 0x00; resp[7] = answerA ? 1 : 0;
+    resp[8] = 0x00; resp[9] = 0x00;
+    resp[10] = 0x00; resp[11] = 0x00;
+    memcpy(resp + 12, req + 12, qLen);
+
+    int outLen = 12 + qLen;
+    if (answerA) {
+      resp[outLen++] = 0xC0; resp[outLen++] = 0x0C; // Name pointer to QNAME
+      resp[outLen++] = 0x00; resp[outLen++] = 0x01; // TYPE = A
+      resp[outLen++] = 0x00; resp[outLen++] = 0x01; // CLASS = IN
+      resp[outLen++] = (uint8_t)((ttlSec >> 24) & 0xFF);
+      resp[outLen++] = (uint8_t)((ttlSec >> 16) & 0xFF);
+      resp[outLen++] = (uint8_t)((ttlSec >> 8) & 0xFF);
+      resp[outLen++] = (uint8_t)(ttlSec & 0xFF);
+      resp[outLen++] = 0x00; resp[outLen++] = 0x04; // RDLENGTH = 4
+      resp[outLen++] = ap_ip[0];
+      resp[outLen++] = ap_ip[1];
+      resp[outLen++] = ap_ip[2];
+      resp[outLen++] = ap_ip[3];
+    }
+
+    dnsUdp.beginPacket(dnsUdp.remoteIP(), dnsUdp.remotePort());
+    dnsUdp.write(resp, outLen);
+    dnsUdp.endPacket();
   }
 }
 
 // =========================================================================
-//            CẤU HÌNH ESP-IDF NATIVE DHCP SERVER CHO SOFTAP
+//       CUSTOM RANDOM DHCP SERVER (LWIP UDP PORT 67 - CAP IP NGAU NHIEN)
 // =========================================================================
 
-void configureSoftApDhcp(bool randomizePool) {
-  esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
-  if (ap_netif != NULL) {
-    IPAddress s_ip, e_ip, gw_ip, sub_ip;
-    if (s_ip.fromString(dhcp_start_str) && e_ip.fromString(dhcp_end_str) && 
-        gw_ip.fromString(ap_ip_str) && sub_ip.fromString(ap_subnet_str)) {
+static portMUX_TYPE g_dhcpMux = portMUX_INITIALIZER_UNLOCKED;
+static struct udp_pcb *g_dhcpPcb = NULL;
+static CustomDhcpConfig g_dhcpCfg = {false, 0, 0, 0, 0, 0, 0, true, true};
+static CustomDhcpLease g_dhcpLeases[MAX_CUSTOM_DHCP_LEASES];
+static char g_dhcpLogRing[DHCP_LOG_RING_SIZE][192];
+static uint8_t g_dhcpLogHead = 0;
+static uint8_t g_dhcpLogTail = 0;
 
-      // Tự động kiểm tra và đảm bảo Subnet Mask /24 (255.255.255.0) và dải IP cùng subnet với Gateway IP
-      if (s_ip[0] != gw_ip[0] || s_ip[1] != gw_ip[1] || s_ip[2] != gw_ip[2] || ap_subnet_str == "255.255.252.0") {
-        ap_subnet_str = "255.255.255.0";
-        dhcp_start_str = String(gw_ip[0]) + "." + String(gw_ip[1]) + "." + String(gw_ip[2]) + ".10";
-        dhcp_end_str   = String(gw_ip[0]) + "." + String(gw_ip[1]) + "." + String(gw_ip[2]) + ".50";
-        sub_ip.fromString(ap_subnet_str);
-        s_ip.fromString(dhcp_start_str);
-        e_ip.fromString(dhcp_end_str);
-        prefs.begin("gateway", false);
-        prefs.putString("ap_subnet", ap_subnet_str);
-        prefs.putString("dhcp_start", dhcp_start_str);
-        prefs.putString("dhcp_end", dhcp_end_str);
-        prefs.end();
+static void customDhcpPushLog(const char *fmt, ...) {
+  char buf[192];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, args);
+  va_end(args);
+  buf[sizeof(buf) - 1] = '\0';
+
+  portENTER_CRITICAL(&g_dhcpMux);
+  uint8_t next = (uint8_t)((g_dhcpLogHead + 1) % DHCP_LOG_RING_SIZE);
+  if (next == g_dhcpLogTail) {
+    g_dhcpLogTail = (uint8_t)((g_dhcpLogTail + 1) % DHCP_LOG_RING_SIZE);
+  }
+  memcpy(g_dhcpLogRing[g_dhcpLogHead], buf, sizeof(buf));
+  g_dhcpLogHead = next;
+  portEXIT_CRITICAL(&g_dhcpMux);
+}
+
+void flushCustomDhcpLogs() {
+  for (;;) {
+    char buf[192];
+    bool has = false;
+    portENTER_CRITICAL(&g_dhcpMux);
+    if (g_dhcpLogTail != g_dhcpLogHead) {
+      memcpy(buf, g_dhcpLogRing[g_dhcpLogTail], sizeof(buf));
+      g_dhcpLogTail = (uint8_t)((g_dhcpLogTail + 1) % DHCP_LOG_RING_SIZE);
+      has = true;
+    }
+    portEXIT_CRITICAL(&g_dhcpMux);
+    if (!has) break;
+    logMessage(String(buf));
+  }
+}
+
+static void u32ToStrBuf(uint32_t ip, char *out, size_t outSz) {
+  snprintf(out, outSz, "%u.%u.%u.%u",
+           (unsigned)((ip >> 24) & 0xFF),
+           (unsigned)((ip >> 16) & 0xFF),
+           (unsigned)((ip >> 8) & 0xFF),
+           (unsigned)(ip & 0xFF));
+}
+
+void releaseCustomDhcpLease(const uint8_t *mac) {
+  if (mac == NULL) return;
+  portENTER_CRITICAL(&g_dhcpMux);
+  for (int i = 0; i < MAX_CUSTOM_DHCP_LEASES; i++) {
+    if (g_dhcpLeases[i].used && memcmp(g_dhcpLeases[i].mac, mac, 6) == 0) {
+      if (g_dhcpLeases[i].ip_u32 != 0) {
+        g_dhcpLeases[i].last_ip_u32 = g_dhcpLeases[i].ip_u32;
       }
+      g_dhcpLeases[i].active = false;
+      g_dhcpLeases[i].confirmed = false;
+      break;
+    }
+  }
+  portEXIT_CRITICAL(&g_dhcpMux);
+}
 
-      // 1. Tạm dừng DHCPS để cài đặt thông số IP info và DHCP options
-      esp_netif_dhcps_stop(ap_netif);
+static int findOrAllocLeaseSlotLocked(const uint8_t *mac, uint32_t now_ms) {
+  int emptyIdx = -1;
+  int inactiveIdx = -1;
+  uint32_t oldestStart = 0xFFFFFFFFUL;
+  int oldestIdx = 0;
 
-      // 2. Cấu hình IP và Subnet Mask /24:
-      // Khi CÓ Internet STA: Gateway = gw_ip để DHCP cấp Option 3 cho client truy cập Internet qua NAPT
-      // Khi TẮT STA (Mạng nội bộ): Gateway = 0.0.0.0 để điện thoại không bị chiếm default route, tự động dùng 5G!
-      bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
-      esp_netif_ip_info_t ip_info;
-      ip_info.ip.addr = (uint32_t)gw_ip;
-      ip_info.netmask.addr = (uint32_t)sub_ip;
-      ip_info.gw.addr = has_uplink ? (uint32_t)gw_ip : 0;
-      esp_netif_set_ip_info(ap_netif, &ip_info);
+  for (int i = 0; i < MAX_CUSTOM_DHCP_LEASES; i++) {
+    if (g_dhcpLeases[i].used && memcmp(g_dhcpLeases[i].mac, mac, 6) == 0) {
+      return i;
+    }
+    if (!g_dhcpLeases[i].used && emptyIdx < 0) {
+      emptyIdx = i;
+    }
+    bool expired = g_dhcpLeases[i].used && g_dhcpLeases[i].active &&
+                   ((uint32_t)(now_ms - g_dhcpLeases[i].start_ms) >= g_dhcpLeases[i].ttl_ms);
+    if (expired) {
+      g_dhcpLeases[i].active = false;
+      g_dhcpLeases[i].confirmed = false;
+    }
+    if (g_dhcpLeases[i].used && !g_dhcpLeases[i].active && inactiveIdx < 0) {
+      inactiveIdx = i;
+    }
+    if (g_dhcpLeases[i].start_ms <= oldestStart) {
+      oldestStart = g_dhcpLeases[i].start_ms;
+      oldestIdx = i;
+    }
+  }
 
-      // Dải cấp IP ngẫu nhiên trong dải < 60 IP do người dùng cấu hình
-      uint32_t s_u32 = ipToU32(s_ip);
-      uint32_t e_u32 = ipToU32(e_ip);
+  int chosen = (emptyIdx >= 0) ? emptyIdx : ((inactiveIdx >= 0) ? inactiveIdx : oldestIdx);
+  memset(&g_dhcpLeases[chosen], 0, sizeof(CustomDhcpLease));
+  g_dhcpLeases[chosen].used = true;
+  memcpy(g_dhcpLeases[chosen].mac, mac, 6);
+  return chosen;
+}
 
-      if (e_u32 < s_u32) {
-        uint32_t tmp = s_u32; s_u32 = e_u32; e_u32 = tmp;
+static uint32_t pickRandomFreeIpLocked(const CustomDhcpConfig *cfg, int selfIdx, uint32_t now_ms, int *freeCountOut) {
+  uint32_t avail[MAX_CUSTOM_DHCP_LEASES];
+  int nAvail = 0;
+
+  for (uint32_t ip = cfg->start_u32; ip <= cfg->end_u32 && nAvail < MAX_CUSTOM_DHCP_LEASES; ip++) {
+    if (ip == cfg->gw_u32 || (ip & 0xFFU) == 0U || (ip & 0xFFU) == 255U) continue;
+    bool busy = false;
+    for (int i = 0; i < MAX_CUSTOM_DHCP_LEASES; i++) {
+      if (!g_dhcpLeases[i].used) continue;
+      if (g_dhcpLeases[i].ip_u32 == ip && g_dhcpLeases[i].decline_until_ms != 0 &&
+          (int32_t)(g_dhcpLeases[i].decline_until_ms - now_ms) > 0) {
+        busy = true;
+        break;
       }
-
-      uint32_t total = e_u32 - s_u32 + 1;
-      if (total >= 60) {
-        e_u32 = s_u32 + 40; // Ép về 41 địa chỉ IP nếu cấu hình cũ vượt quá giới hạn < 60
-        total = 41;
+      if (i == selfIdx) continue;
+      if (g_dhcpLeases[i].active && g_dhcpLeases[i].ip_u32 == ip) {
+        if ((uint32_t)(now_ms - g_dhcpLeases[i].start_ms) < g_dhcpLeases[i].ttl_ms) {
+          busy = true;
+          break;
+        } else {
+          g_dhcpLeases[i].active = false;
+          g_dhcpLeases[i].confirmed = false;
+        }
       }
+    }
+    if (!busy) {
+      avail[nAvail++] = ip;
+    }
+  }
 
-      // Cấp phát IP ngẫu nhiên trong dải: Bắt đầu tại vị trí ngẫu nhiên khi randomizePool = true
-      uint32_t cur_start = s_u32;
-      if (randomizePool && total > 3) {
-        uint32_t shift = esp_random() % (total / 3 + 1);
-        cur_start = s_u32 + shift;
-      }
-      active_pool_start = cur_start;
-      active_pool_end = e_u32;
+  if (freeCountOut) *freeCountOut = nAvail;
+  if (nAvail == 0) return 0;
 
-      IPAddress act_s = u32ToIp(active_pool_start);
-      IPAddress act_e = u32ToIp(active_pool_end);
+  uint32_t prevIp = g_dhcpLeases[selfIdx].last_ip_u32;
+  if (nAvail > 1 && prevIp != 0) {
+    uint32_t diff[MAX_CUSTOM_DHCP_LEASES];
+    int nDiff = 0;
+    for (int i = 0; i < nAvail; i++) {
+      if (avail[i] != prevIp) diff[nDiff++] = avail[i];
+    }
+    if (nDiff > 0) {
+      return diff[esp_random() % (uint32_t)nDiff];
+    }
+  }
+  return avail[esp_random() % (uint32_t)nAvail];
+}
 
-      dhcps_lease_t lease;
-      memset(&lease, 0, sizeof(lease));
-      lease.enable = true;
-      lease.start_ip.addr = (uint32_t)act_s;
-      lease.end_ip.addr   = (uint32_t)act_e;
+static bool appendOptBytes(uint8_t *opts, size_t maxLen, size_t *idx, uint8_t code, uint8_t len, const void *data) {
+  if (*idx + 2 + len + 1 > maxLen) return false;
+  opts[(*idx)++] = code;
+  opts[(*idx)++] = len;
+  if (len > 0 && data != NULL) {
+    memcpy(&opts[*idx], data, len);
+    *idx += len;
+  }
+  return true;
+}
 
-      esp_err_t opt_err = esp_netif_dhcps_option(
-        ap_netif,
-        ESP_NETIF_OP_SET,
-        ESP_NETIF_REQUESTED_IP_ADDRESS,
-        &lease,
-        sizeof(dhcps_lease_t)
-      );
-      if (opt_err != ESP_OK) {
-        logPrintf("[DHCP] Set dai IP that bai: %d", opt_err);
+static bool appendOptU32(uint8_t *opts, size_t maxLen, size_t *idx, uint8_t code, uint32_t hostVal) {
+  uint32_t netVal = lwip_htonl(hostVal);
+  return appendOptBytes(opts, maxLen, idx, code, 4, &netVal);
+}
+
+static void customDhcpSendReply(struct udp_pcb *pcb, struct netif *lwip_ap,
+                                const CustomDhcpPacket *rx, const CustomDhcpConfig *cfg,
+                                uint8_t msgType, uint32_t yiaddr_u32) {
+  if (pcb == NULL || lwip_ap == NULL) return;
+
+  CustomDhcpPacket tx;
+  memset(&tx, 0, sizeof(tx));
+  tx.op = 2; // BOOTREPLY
+  tx.htype = 1;
+  tx.hlen = 6;
+  tx.hops = 0;
+  tx.xid = rx->xid;
+  tx.secs = 0;
+  tx.flags = rx->flags;
+  tx.ciaddr = (msgType == 5 && rx->ciaddr != 0) ? rx->ciaddr : 0;
+  tx.yiaddr = (msgType == 6) ? 0 : lwip_htonl(yiaddr_u32);
+  tx.siaddr = (msgType == 6) ? 0 : lwip_htonl(cfg->gw_u32);
+  tx.giaddr = rx->giaddr;
+  memcpy(tx.chaddr, rx->chaddr, 16);
+  tx.magic[0] = 99; tx.magic[1] = 130; tx.magic[2] = 83; tx.magic[3] = 99;
+
+  size_t optIdx = 0;
+  appendOptBytes(tx.options, sizeof(tx.options), &optIdx, 53, 1, &msgType);
+  appendOptU32(tx.options, sizeof(tx.options), &optIdx, 54, cfg->gw_u32);
+
+  if (msgType != 6) {
+    appendOptU32(tx.options, sizeof(tx.options), &optIdx, 51, 3600U); // Lease 1h
+    appendOptU32(tx.options, sizeof(tx.options), &optIdx, 58, 1800U); // T1
+    appendOptU32(tx.options, sizeof(tx.options), &optIdx, 59, 3150U); // T2
+    appendOptU32(tx.options, sizeof(tx.options), &optIdx, 1, cfg->mask_u32);
+    if (cfg->offer_router) {
+      appendOptU32(tx.options, sizeof(tx.options), &optIdx, 3, cfg->gw_u32);
+    }
+    if (cfg->offer_dns && cfg->dns1_u32 != 0) {
+      uint32_t dnsArr[2];
+      dnsArr[0] = lwip_htonl(cfg->dns1_u32);
+      if (cfg->dns2_u32 != 0 && cfg->dns2_u32 != cfg->dns1_u32) {
+        dnsArr[1] = lwip_htonl(cfg->dns2_u32);
+        appendOptBytes(tx.options, sizeof(tx.options), &optIdx, 6, 8, dnsArr);
       } else {
-        logPrintf("[DHCP] Set thanh cong dai IP: %s -> %s (Cap phat ngau nhien trong dai)", 
-                  u32ToIp(s_u32).toString().c_str(), u32ToIp(e_u32).toString().c_str());
+        appendOptBytes(tx.options, sizeof(tx.options), &optIdx, 6, 4, dnsArr);
       }
-    } else {
-      esp_netif_dhcps_stop(ap_netif);
     }
+  }
+  tx.options[optIdx++] = 255; // END option
 
-    // 1. Cấu hình Option 3 (Router / Default Gateway):
-    // Chỉ cấp Gateway khi THỰC SỰ có kết nối Wi-Fi nguồn (has_uplink)
-    // Khi chưa có Internet STA hoặc khi tắt STA (chế độ 5G): TẮT Option 3 (OFFER_ROUTER = 0) -> Điện thoại dùng 5G không bị chiếm default route!
-    bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
-    dhcps_offer_t dhcps_router_value = has_uplink ? OFFER_ROUTER : 0;
-    esp_netif_dhcps_option(
-      ap_netif,
-      ESP_NETIF_OP_SET,
-      ESP_NETIF_ROUTER_SOLICITATION_ADDRESS,
-      &dhcps_router_value,
-      sizeof(dhcps_router_value)
-    );
+  u16_t pktLen = (u16_t)(240 + optIdx);
+  if (pktLen < 300) pktLen = 300;
 
-    // 2. Cấu hình Option 6 (Domain Name Server - DNS):
-    // Khi có Internet STA: Cấp DNS Server để client duyệt web trực tiếp qua NAPT
-    // Khi chưa có Internet STA: KHÔNG cấp DNS (dhcps_dns_value = 0) để điện thoại dùng DNS 5G
-    dhcps_offer_t dhcps_dns_value = has_uplink ? OFFER_DNS : 0;
-    esp_netif_dhcps_option(
-      ap_netif,
-      ESP_NETIF_OP_SET,
-      ESP_NETIF_DOMAIN_NAME_SERVER,
-      &dhcps_dns_value,
-      sizeof(dhcps_dns_value)
-    );
+  struct pbuf *q = pbuf_alloc(PBUF_TRANSPORT, pktLen, PBUF_RAM);
+  if (q == NULL) return;
+  pbuf_take(q, &tx, pktLen);
 
-    if (dhcps_dns_value == OFFER_DNS) {
-      esp_netif_dns_info_t dns_main, dns_backup;
-      dns_main.ip.type = ESP_IPADDR_TYPE_V4;
-      dns_backup.ip.type = ESP_IPADDR_TYPE_V4;
-
-      IPAddress upstreamDns = WiFi.dnsIP(0);
-      if (upstreamDns == IPAddress(0, 0, 0, 0)) {
-        upstreamDns = IPAddress(8, 8, 8, 8); // Google Public DNS
-      }
-      dns_main.ip.u_addr.ip4.addr = (uint32_t)upstreamDns;
-
-      IPAddress backupDns = WiFi.dnsIP(1);
-      if (backupDns == IPAddress(0, 0, 0, 0) || backupDns == upstreamDns) {
-        backupDns = IPAddress(1, 1, 1, 1); // Cloudflare Public DNS
-      }
-      dns_backup.ip.u_addr.ip4.addr = (uint32_t)backupDns;
-
-      esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_MAIN, &dns_main);
-      esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_BACKUP, &dns_backup);
-    }
-
-    esp_err_t start_err = esp_netif_dhcps_start(ap_netif);
-    logPrintf("[DHCP] Khoi chay Native ESP-IDF DHCP Server! (Ket qua: %d | Pool: %s -> %s | Mode: %s)",
-              start_err, dhcp_start_str.c_str(), dhcp_end_str.c_str(),
-              has_uplink ? "Internet NAT" : "Offline 5G Cell");
-
-    // Luon dam bao Default Netif la STA khi da ket noi Wi-Fi nguon
-    esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    if (sta_netif != NULL && has_uplink) {
-      esp_netif_set_default_netif(sta_netif);
-    }
+  bool forceBroadcast = (msgType == 6) || ((lwip_ntohs(rx->flags) & 0x8000U) != 0) || (yiaddr_u32 == 0);
+  if (forceBroadcast) {
+    udp_sendto_if(pcb, q, IP_ADDR_BROADCAST, 68, lwip_ap);
   } else {
+    ip4_addr_t arp_ip4;
+    arp_ip4.addr = lwip_htonl(yiaddr_u32);
+    struct eth_addr client_eth;
+    memcpy(client_eth.addr, rx->chaddr, 6);
+    etharp_add_static_entry(&arp_ip4, &client_eth);
+
+    ip_addr_t dst_ip;
+    ip_addr_set_ip4_u32_val(dst_ip, arp_ip4.addr);
+    udp_sendto_if(pcb, q, &dst_ip, 68, lwip_ap);
+
+    etharp_remove_static_entry(&arp_ip4);
+  }
+  pbuf_free(q);
+}
+
+static void customDhcpRecvCb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
+                             const ip_addr_t *addr, u16_t port) {
+  (void)arg; (void)addr; (void)port;
+  if (p == NULL) return;
+  if (p->tot_len < 240) {
+    pbuf_free(p);
+    return;
+  }
+
+  CustomDhcpPacket rx;
+  memset(&rx, 0, sizeof(rx));
+  u16_t copyLen = p->tot_len > (u16_t)sizeof(rx) ? (u16_t)sizeof(rx) : p->tot_len;
+  pbuf_copy_partial(p, &rx, copyLen, 0);
+  pbuf_free(p);
+
+  if (rx.op != 1 || rx.htype != 1 || rx.hlen != 6) return;
+  if (rx.magic[0] != 99 || rx.magic[1] != 130 || rx.magic[2] != 83 || rx.magic[3] != 99) return;
+
+  uint8_t msgType = 0;
+  uint32_t reqIp = 0;
+  bool hasReqIp = false;
+  uint32_t srvId = 0;
+  bool hasSrvId = false;
+  char hostName[32] = {0};
+  char vendorCls[32] = {0};
+  bool wantsOpt114 = false;
+
+  size_t optsLen = (copyLen > 240) ? (size_t)(copyLen - 240) : 0;
+  if (optsLen > sizeof(rx.options)) optsLen = sizeof(rx.options);
+  for (size_t i = 0; i < optsLen; ) {
+    uint8_t code = rx.options[i++];
+    if (code == 0) continue;
+    if (code == 255) break;
+    if (i >= optsLen) break;
+    uint8_t olen = rx.options[i++];
+    if (i + olen > optsLen) break;
+
+    if (code == 53 && olen >= 1) {
+      msgType = rx.options[i];
+    } else if (code == 50 && olen == 4) {
+      uint32_t tmp;
+      memcpy(&tmp, &rx.options[i], 4);
+      reqIp = lwip_ntohl(tmp);
+      hasReqIp = true;
+    } else if (code == 54 && olen == 4) {
+      uint32_t tmp;
+      memcpy(&tmp, &rx.options[i], 4);
+      srvId = lwip_ntohl(tmp);
+      hasSrvId = true;
+    } else if (code == 12 && olen >= 1) {
+      size_t n = olen > 31 ? 31 : olen;
+      for (size_t k = 0; k < n; k++) {
+        uint8_t c = rx.options[i + k];
+        hostName[k] = (c >= 32 && c <= 126) ? (char)c : '?';
+      }
+      hostName[n] = '\0';
+    } else if (code == 60 && olen >= 1) {
+      size_t n = olen > 31 ? 31 : olen;
+      for (size_t k = 0; k < n; k++) {
+        uint8_t c = rx.options[i + k];
+        vendorCls[k] = (c >= 32 && c <= 126) ? (char)c : '?';
+      }
+      vendorCls[n] = '\0';
+    } else if (code == 55) {
+      for (size_t k = 0; k < olen; k++) {
+        if (rx.options[i + k] == 114) wantsOpt114 = true;
+      }
+    }
+    i += olen;
+  }
+
+  CustomDhcpConfig cfg;
+  portENTER_CRITICAL(&g_dhcpMux);
+  cfg = g_dhcpCfg;
+  portEXIT_CRITICAL(&g_dhcpMux);
+  if (!cfg.enabled) return;
+
+  esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+  struct netif *lwip_ap = ap_netif ? (struct netif *)esp_netif_get_netif_impl(ap_netif) : NULL;
+  if (lwip_ap == NULL) return;
+
+  char macStr[18];
+  snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+           rx.chaddr[0], rx.chaddr[1], rx.chaddr[2], rx.chaddr[3], rx.chaddr[4], rx.chaddr[5]);
+
+  uint32_t now_ms = millis();
+
+  if (msgType == 1) { // DHCPDISCOVER
+    uint32_t chosenIp = 0;
+    int freeCount = 0;
+
+    portENTER_CRITICAL(&g_dhcpMux);
+    int slot = findOrAllocLeaseSlotLocked(rx.chaddr, now_ms);
+    CustomDhcpLease &L = g_dhcpLeases[slot];
+    if (L.active && L.ip_u32 >= cfg.start_u32 && L.ip_u32 <= cfg.end_u32 &&
+        L.ip_u32 != cfg.gw_u32 && (uint32_t)(now_ms - L.start_ms) < L.ttl_ms) {
+      chosenIp = L.ip_u32;
+    } else {
+      chosenIp = pickRandomFreeIpLocked(&cfg, slot, now_ms, &freeCount);
+      if (chosenIp != 0) {
+        L.active = true;
+        L.confirmed = false;
+        L.ip_u32 = chosenIp;
+        L.start_ms = now_ms;
+        L.ttl_ms = 30000UL; // Giu cho OFFER 30 giay
+      }
+    }
+    portEXIT_CRITICAL(&g_dhcpMux);
+
+    if (chosenIp != 0) {
+      char ipBuf[16];
+      u32ToStrBuf(chosenIp, ipBuf, sizeof(ipBuf));
+      customDhcpSendReply(pcb, lwip_ap, &rx, &cfg, 2, chosenIp); // DHCPOFFER
+      customDhcpPushLog("[DHCP-OFFER] %s | MAC:%s | Host:%s | Vendor:%s | Opt114:%d",
+                        ipBuf, macStr, hostName[0] ? hostName : "-", vendorCls[0] ? vendorCls : "-", wantsOpt114 ? 1 : 0);
+    }
+  } else if (msgType == 3) { // DHCPREQUEST
+    if (hasSrvId && srvId != cfg.gw_u32) return; // Danh cho DHCP server khac
+
+    uint32_t ciaddrHost = lwip_ntohl(rx.ciaddr);
+    uint32_t targetIp = hasReqIp ? reqIp : ciaddrHost;
+    bool valid = false;
+
+    portENTER_CRITICAL(&g_dhcpMux);
+    int slot = findOrAllocLeaseSlotLocked(rx.chaddr, now_ms);
+    CustomDhcpLease &L = g_dhcpLeases[slot];
+    if (targetIp != 0 && targetIp >= cfg.start_u32 && targetIp <= cfg.end_u32 && targetIp != cfg.gw_u32 &&
+        L.active && L.ip_u32 == targetIp) {
+      L.confirmed = true;
+      L.last_ip_u32 = targetIp;
+      L.start_ms = now_ms;
+      L.ttl_ms = 3600000UL; // 1 gio
+      valid = true;
+    }
+    portEXIT_CRITICAL(&g_dhcpMux);
+
+    char ipBuf[16];
+    u32ToStrBuf(targetIp, ipBuf, sizeof(ipBuf));
+    if (valid) {
+      customDhcpSendReply(pcb, lwip_ap, &rx, &cfg, 5, targetIp); // DHCPACK
+      customDhcpPushLog("[WIFI-AP] Da cap IP ngau nhien: %s cho %s (Host:%s) thanh cong!",
+                        ipBuf, macStr, hostName[0] ? hostName : "-");
+    } else {
+      customDhcpSendReply(pcb, lwip_ap, &rx, &cfg, 6, 0); // DHCPNAK -> Ep DHCPDISCOVER cap IP ngau nhien
+      customDhcpPushLog("[DHCP-NAK] MAC:%s xin IP cu %s -> Tu choi (NAK) de cap IP ngau nhien moi!",
+                        macStr, ipBuf);
+    }
+  } else if (msgType == 7) { // DHCPRELEASE
+    releaseCustomDhcpLease(rx.chaddr);
+  } else if (msgType == 4) { // DHCPDECLINE
+    portENTER_CRITICAL(&g_dhcpMux);
+    for (int i = 0; i < MAX_CUSTOM_DHCP_LEASES; i++) {
+      if (g_dhcpLeases[i].used && memcmp(g_dhcpLeases[i].mac, rx.chaddr, 6) == 0) {
+        g_dhcpLeases[i].active = false;
+        g_dhcpLeases[i].confirmed = false;
+        g_dhcpLeases[i].decline_until_ms = now_ms + 60000UL;
+        break;
+      }
+    }
+    portEXIT_CRITICAL(&g_dhcpMux);
+  }
+}
+
+static void customDhcpBindTcpipCb(void *ctx) {
+  int *outErr = (int *)ctx;
+  esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+  struct netif *lwip_ap = ap_netif ? (struct netif *)esp_netif_get_netif_impl(ap_netif) : NULL;
+  if (lwip_ap == NULL) {
+    if (outErr) *outErr = -1;
+    return;
+  }
+
+  if (g_dhcpPcb == NULL) {
+    g_dhcpPcb = udp_new_ip_type(IPADDR_TYPE_V4);
+    if (g_dhcpPcb == NULL) {
+      if (outErr) *outErr = -2;
+      return;
+    }
+    ip_set_option(g_dhcpPcb, SOF_BROADCAST);
+    err_t err = udp_bind(g_dhcpPcb, IP_ANY_TYPE, 67);
+    if (err != ERR_OK) {
+      udp_remove(g_dhcpPcb);
+      g_dhcpPcb = NULL;
+      if (outErr) *outErr = (int)err;
+      return;
+    }
+    udp_recv(g_dhcpPcb, customDhcpRecvCb, NULL);
+  }
+  udp_bind_netif(g_dhcpPcb, lwip_ap);
+  if (outErr) *outErr = 0;
+}
+
+void configureSoftApDhcp(bool resetOutOfRangeLeases) {
+  esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+  if (ap_netif == NULL) {
     logMessage("[DHCP-LOI] Khong tim thay netif WIFI_AP_DEF!");
+    return;
+  }
+
+  IPAddress s_ip, e_ip, gw_ip, sub_ip;
+  if (!s_ip.fromString(dhcp_start_str) || !e_ip.fromString(dhcp_end_str) ||
+      !gw_ip.fromString(ap_ip_str) || !sub_ip.fromString(ap_subnet_str)) {
+    esp_netif_dhcps_stop(ap_netif);
+    return;
+  }
+
+  // Tu dong dam bao Subnet Mask /24 va dai IP cung subnet voi Gateway IP
+  if (s_ip[0] != gw_ip[0] || s_ip[1] != gw_ip[1] || s_ip[2] != gw_ip[2] || ap_subnet_str == "255.255.252.0") {
+    ap_subnet_str = "255.255.255.0";
+    dhcp_start_str = String(gw_ip[0]) + "." + String(gw_ip[1]) + "." + String(gw_ip[2]) + ".10";
+    dhcp_end_str   = String(gw_ip[0]) + "." + String(gw_ip[1]) + "." + String(gw_ip[2]) + ".50";
+    sub_ip.fromString(ap_subnet_str);
+    s_ip.fromString(dhcp_start_str);
+    e_ip.fromString(dhcp_end_str);
+    prefs.begin("gateway", false);
+    prefs.putString("ap_subnet", ap_subnet_str);
+    prefs.putString("dhcp_start", dhcp_start_str);
+    prefs.putString("dhcp_end", dhcp_end_str);
+    prefs.end();
+  }
+
+  // 1. Luon tat Native ESP-IDF DHCPS (tranh chiem cong UDP 67 va tranh cap tuan tu)
+  esp_netif_dhcps_stop(ap_netif);
+
+  // 2. Cap nhat IP/Subnet cho WIFI_AP_DEF chi khi thay doi de tranh reset socket SoftAP
+  esp_netif_ip_info_t cur_ip, new_ip;
+  new_ip.ip.addr = (uint32_t)gw_ip;
+  new_ip.netmask.addr = (uint32_t)sub_ip;
+  new_ip.gw.addr = (uint32_t)gw_ip;
+  if (esp_netif_get_ip_info(ap_netif, &cur_ip) != ESP_OK ||
+      cur_ip.ip.addr != new_ip.ip.addr ||
+      cur_ip.netmask.addr != new_ip.netmask.addr ||
+      cur_ip.gw.addr != new_ip.gw.addr) {
+    esp_netif_set_ip_info(ap_netif, &new_ip);
+  }
+
+  // 3. Chot dai IP hop le < 60 IP
+  uint32_t s_u32 = ipToU32(s_ip);
+  uint32_t e_u32 = ipToU32(e_ip);
+  if (e_u32 < s_u32) {
+    uint32_t tmp = s_u32; s_u32 = e_u32; e_u32 = tmp;
+  }
+  uint32_t total = e_u32 - s_u32 + 1;
+  if (total >= 60) {
+    e_u32 = s_u32 + 40;
+    total = 41;
+  }
+  active_pool_start = s_u32;
+  active_pool_end = e_u32;
+
+  bool has_uplink = (sta_enabled && WiFi.status() == WL_CONNECTED);
+  IPAddress dns1_ip = gw_ip;
+  IPAddress dns2_ip(0, 0, 0, 0);
+  if (has_uplink) {
+    dns1_ip = WiFi.dnsIP(0);
+    if (dns1_ip == IPAddress(0, 0, 0, 0)) dns1_ip = IPAddress(8, 8, 8, 8);
+    dns2_ip = WiFi.dnsIP(1);
+    if (dns2_ip == IPAddress(0, 0, 0, 0) || dns2_ip == dns1_ip) dns2_ip = IPAddress(1, 1, 1, 1);
+  }
+
+  portENTER_CRITICAL(&g_dhcpMux);
+  g_dhcpCfg.enabled = true;
+  g_dhcpCfg.start_u32 = s_u32;
+  g_dhcpCfg.end_u32 = e_u32;
+  g_dhcpCfg.gw_u32 = ipToU32(gw_ip);
+  g_dhcpCfg.mask_u32 = ipToU32(sub_ip);
+  g_dhcpCfg.dns1_u32 = ipToU32(dns1_ip);
+  g_dhcpCfg.dns2_u32 = (dns2_ip == IPAddress(0, 0, 0, 0)) ? 0U : ipToU32(dns2_ip);
+  g_dhcpCfg.offer_router = true;
+  g_dhcpCfg.offer_dns = true;
+  if (resetOutOfRangeLeases) {
+    for (int i = 0; i < MAX_CUSTOM_DHCP_LEASES; i++) {
+      if (g_dhcpLeases[i].used && (g_dhcpLeases[i].ip_u32 < s_u32 || g_dhcpLeases[i].ip_u32 > e_u32 || g_dhcpLeases[i].ip_u32 == g_dhcpCfg.gw_u32)) {
+        g_dhcpLeases[i].active = false;
+        g_dhcpLeases[i].confirmed = false;
+      }
+    }
+  }
+  portEXIT_CRITICAL(&g_dhcpMux);
+
+  int bindErr = 0;
+  tcpip_callback_wait(customDhcpBindTcpipCb, &bindErr);
+
+  logPrintf("[DHCP-RANDOM] Khoi chay Custom Random DHCP! (Bind:%d | Pool: %s -> %s (%u IP) | GW:%s DNS:%s | Mode:%s)",
+            bindErr, u32ToIp(s_u32).toString().c_str(), u32ToIp(e_u32).toString().c_str(),
+            (unsigned)total, gw_ip.toString().c_str(), dns1_ip.toString().c_str(),
+            has_uplink ? "Internet NAT" : (sta_enabled ? "Captive Setup" : "Offline 5G Probe"));
+
+  esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+  if (sta_netif != NULL && has_uplink) {
+    esp_netif_set_default_netif(sta_netif);
   }
 }
 
 // Lắng nghe sự kiện Wi-Fi SoftAP và Wi-Fi Nguồn STA
 void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
-  if (event == ARDUINO_EVENT_WIFI_AP_STADISCONNECTED) {
+  if (event == ARDUINO_EVENT_WIFI_AP_START) {
+    // Dam bao Native ESP-IDF DHCPS khong bao gio tu khoi dong lai sau WiFi.mode/softAP
+    dhcp_reconfigure_needed = true;
+  } else if (event == ARDUINO_EVENT_WIFI_AP_STADISCONNECTED) {
     uint8_t *mac = info.wifi_ap_stadisconnected.mac;
+    releaseCustomDhcpLease(mac);
     char buf[100];
     snprintf(buf, sizeof(buf), "[WIFI-AP] Thiet bi ngat ket noi: %02X:%02X:%02X:%02X:%02X:%02X",
               mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     Serial.println(buf);
     addLogToBuffer(String(buf));
-
-    // Chi yeu cau chon lai ngau nhien pool IP khi tat ca thiet bi deu da ngat ket noi
-    wifi_sta_list_t sta_list;
-    if (esp_wifi_ap_get_sta_list(&sta_list) == ESP_OK && sta_list.num == 0) {
-      dhcp_reconfigure_needed = true;
-    }
   } else if (event == ARDUINO_EVENT_WIFI_AP_STACONNECTED) {
     uint8_t *mac = info.wifi_ap_staconnected.mac;
+    releaseCustomDhcpLease(mac);
     char buf[120];
     snprintf(buf, sizeof(buf), "[WIFI-AP] Thiet bi moi ket noi: %02X:%02X:%02X:%02X:%02X:%02X. Dang cap IP...",
               mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
@@ -2203,21 +2839,7 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
 
     last_ap_client_connected_time = millis(); // Ghi nhan thoi diem de hoan STA reconnect
   } else if (event == ARDUINO_EVENT_WIFI_AP_STAIPASSIGNED) {
-    static uint32_t last_assigned_ip = 0;
-    static unsigned long last_assigned_time = 0;
-    uint32_t raw_ip = info.wifi_ap_staipassigned.ip.addr;
-    if (raw_ip != last_assigned_ip || (millis() - last_assigned_time > 2000)) {
-      last_assigned_ip = raw_ip;
-      last_assigned_time = millis();
-      IPAddress clientIp = IPAddress(raw_ip);
-      uint8_t *mac = info.wifi_ap_staipassigned.mac;
-      char buf[120];
-      snprintf(buf, sizeof(buf), "[WIFI-AP] Da cap IP: %s cho thiet bi: %02X:%02X:%02X:%02X:%02X:%02X thanh cong!",
-               clientIp.toString().c_str(),
-               mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-      Serial.println(buf);
-      addLogToBuffer(String(buf));
-    }
+    // Su dung Custom Random DHCP Server nen log cap IP thuc te duoc xu ly tai flushCustomDhcpLogs()
   } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
     char buf[120];
     snprintf(buf, sizeof(buf), "[WIFI-STA] Da nhan IP: %s | Gateway: %s",
@@ -2283,38 +2905,66 @@ void handleRoot() {
   server.send_P(200, "text/html", INDEX_HTML);
 }
 
+static void logHttpProbeThrottled(const String &host, const String &uri, const String &ua, int statusCode) {
+  static String lastKey = "";
+  static unsigned long lastTs = 0;
+  String k = host + uri;
+  unsigned long now = millis();
+  if (k == lastKey && (now - lastTs) < 2000UL) return;
+  lastKey = k;
+  lastTs = now;
+  logPrintf("[HTTP-PROBE] Host:%s URI:%s -> %d | UA:%s",
+            host.c_str(), uri.c_str(), statusCode, ua.length() ? ua.c_str() : "-");
+}
+
+static bool trySendProbeSuccessResponse(const String &uri, const String &host) {
+  if (uri.indexOf("hotspot-detect") >= 0 || uri.indexOf("success.html") >= 0 || uri.indexOf("canonical") >= 0 ||
+      host.indexOf("apple") >= 0 || host.indexOf("airport") >= 0 || host.indexOf("ibook") >= 0 ||
+      host.indexOf("itools") >= 0 || host.indexOf("thinkdifferent") >= 0) {
+    server.send(200, "text/html", "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
+    return true;
+  }
+  if (uri.indexOf("generate_204") >= 0 || uri.indexOf("gen_204") >= 0 ||
+      host.indexOf("gstatic") >= 0 || host.indexOf("google") >= 0 ||
+      host.indexOf("rom.miui") >= 0 || host.indexOf("oppomobile") >= 0 ||
+      host.indexOf("heytap") >= 0 || host.indexOf("vivo.com") >= 0 ||
+      host.indexOf("samsung") >= 0 || host.indexOf("hicloud") >= 0) {
+    server.send(204, "text/plain", "");
+    return true;
+  }
+  if (uri.indexOf("connecttest") >= 0 || host.indexOf("msftconnecttest") >= 0) {
+    server.send(200, "text/plain", "Microsoft Connect Test");
+    return true;
+  }
+  if (uri.indexOf("ncsi") >= 0 || host.indexOf("msftncsi") >= 0) {
+    server.send(200, "text/plain", "Microsoft NCSI");
+    return true;
+  }
+  if (uri.indexOf("success.txt") >= 0) {
+    server.send(200, "text/plain", "success\n");
+    return true;
+  }
+  return false;
+}
+
 // Bắt và chuyển hướng các request kiểm tra captive của iOS / Android / Windows
 void handleCaptiveRedirect() {
   String uri = server.uri();
   String host = server.hostHeader();
+  String ua = server.hasHeader("User-Agent") ? server.header("User-Agent") : "";
+  bool isLocalHost = (host.length() == 0 || host == ap_ip_str || host == WiFi.localIP().toString() || host.indexOf("esp32.local") >= 0);
 
-  // 1. Khi CÓ kết nối Internet Wi-Fi nguồn:
-  // Phản hồi Success / 204 ngay lập tức cho các probe kiểm tra của điện thoại để điện thoại nhận biết đã có Internet
-  if (sta_enabled && WiFi.status() == WL_CONNECTED) {
-    if (uri.indexOf("hotspot-detect") >= 0 || uri.indexOf("success.html") >= 0 || uri.indexOf("canonical") >= 0 ||
-        host.indexOf("apple") >= 0 || host.indexOf("airport") >= 0 || host.indexOf("ibook") >= 0 || 
-        host.indexOf("itools") >= 0 || host.indexOf("thinkdifferent") >= 0) {
-      server.send(200, "text/html", "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
-      return;
+  // 1. Khi CÓ kết nối Internet Wi-Fi nguồn HOẶC ở chế độ Offline 5G:
+  // Phản hồi 204/Success cho HTTP probe (trong khi HTTPS:443 từ chối -> Android nhận Partial/Poor network & giữ 5G, không khóa "No internet")
+  if ((sta_enabled && WiFi.status() == WL_CONNECTED) || !sta_enabled) {
+    if (!isLocalHost || uri.indexOf("generate_204") >= 0 || uri.indexOf("gen_204") >= 0 || uri.indexOf("hotspot-detect") >= 0) {
+      if (trySendProbeSuccessResponse(uri, host)) {
+        if (!sta_enabled) logHttpProbeThrottled(host, uri, ua, (uri.indexOf("204") >= 0 || host.indexOf("gstatic") >= 0 || host.indexOf("google") >= 0 || host.indexOf("miui") >= 0) ? 204 : 200);
+        return;
+      }
     }
-    if (uri.indexOf("generate_204") >= 0 || uri.indexOf("gen_204") >= 0 ||
-        host.indexOf("gstatic") >= 0 || host.indexOf("google") >= 0) {
-      server.send(204, "text/plain", "");
-      return;
-    }
-    if (uri.indexOf("connecttest") >= 0 || host.indexOf("msftconnecttest") >= 0) {
-      server.send(200, "text/plain", "Microsoft Connect Test");
-      return;
-    }
-    if (uri.indexOf("ncsi") >= 0 || host.indexOf("msftncsi") >= 0) {
-      server.send(200, "text/plain", "Microsoft NCSI");
-      return;
-    }
-    if (uri.indexOf("success.txt") >= 0) {
-      server.send(200, "text/plain", "success\n");
-      return;
-    }
-    if (host.length() > 0 && host != ap_ip_str && host != WiFi.localIP().toString() && host.indexOf("esp32.local") == -1) {
+    if (!isLocalHost) {
+      if (!sta_enabled) logHttpProbeThrottled(host, uri, ua, 404);
       server.send(404, "text/plain", "Not Found");
       return;
     }
@@ -2323,15 +2973,9 @@ void handleCaptiveRedirect() {
   }
 
   // 2. Khi đang bật Wi-Fi nguồn nhưng CHƯA có mạng (chờ cấu hình): chuyển hướng về Web Portal để mở Captive Portal
-  if (sta_enabled && host.length() > 0 && host != ap_ip_str && host != WiFi.localIP().toString() && host.indexOf("esp32.local") == -1) {
+  if (!isLocalHost) {
     server.sendHeader("Location", String("http://") + ap_ip_str + "/", true);
     server.send(302, "text/plain", "");
-    return;
-  }
-
-  // 3. Khi TẮT Wi-Fi nguồn (Mạng nội bộ 5G): Không bắt bớ các tên miền ngoài để điện thoại thoải mái dùng 5G
-  if (!sta_enabled && host.length() > 0 && host != ap_ip_str && host != WiFi.localIP().toString() && host.indexOf("esp32.local") == -1) {
-    server.send(404, "text/plain", "Not Found");
     return;
   }
   handleRoot();
@@ -3202,6 +3846,8 @@ void setup() {
   server.on("/ncsi.txt", HTTP_GET, handleCaptiveRedirect);           // Windows
   server.onNotFound(handleCaptiveRedirect);
 
+  const char *collectHdrs[] = {"User-Agent"};
+  server.collectHeaders(collectHdrs, 1);
   server.begin();
   logMessage("[WEB] Web Server cong 80 da san sang!");
 
@@ -3247,30 +3893,34 @@ void setup() {
     } else {
       logMessage("[MODE] Wi-Fi nguon dang TAT -> MANG NOI BO OFFLINE. Dien thoai dung 5G.");
       disableNapt();
-      stopCaptiveDns();
+      syncDnsServerMode(false);
       configureSoftApDhcp(false);
     }
   }
+  dhcp_reconfigure_needed = false;
 
   logMessage("===> HE THONG GATEWAY + BLE SECURE + RANDOM DHCP DA SAN SANG! <===");
 }
 
 void loop() {
+  // 0. In log DHCP tu Custom Random DHCP Server (luong lwip -> Serial/BLE)
+  flushCustomDhcpLogs();
+
   // 1. Cập nhật trạng thái đèn LED báo Wi-Fi nguồn (GPIO 2)
   updateWifiLed();
 
   // 1b. Phục vụ các yêu cầu Web Server
   server.handleClient();
 
-  // 2. Tái cấu hình ngẫu nhiên pool DHCP khi tat ca thiet bi da ngat ket noi
+  // 2. Dong bo lai cau hinh Custom DHCP Server neu AP vua khoi dong lai
   if (dhcp_reconfigure_needed) {
     dhcp_reconfigure_needed = false;
-    configureSoftApDhcp(true);
+    configureSoftApDhcp(false);
   }
 
-  // 2b. Phục vụ Captive DNS Server nếu chưa có Internet
-  if (dns_captive_running) {
-    dnsServer.processNextRequest();
+  // 2b. Phục vụ Unified DNS Server (Captive Portal / Smart 5G Probe UDP 53)
+  if (dns_mode != DNS_MODE_OFF) {
+    handleDnsUdp();
   }
 
   // 4. Xử lý lệnh nhận được từ Bluetooth LE trong Task chính (tránh nghẽn NimBLE Host Task)
@@ -3323,10 +3973,7 @@ void loop() {
         sta_conn_state = STA_STATE_IDLE;
       }
       if (napt_enabled) disableNapt();
-      if (dns_captive_running) {
-        dnsServer.stop();
-        dns_captive_running = false;
-      }
+      syncDnsServerMode(false);
     }
   }
 
@@ -3341,12 +3988,13 @@ void loop() {
       WiFi.mode(WIFI_AP);
       sta_conn_state = STA_STATE_IDLE;
       disableNapt();
-      stopCaptiveDns();
+      syncDnsServerMode(false);
       configureSoftApDhcp(false);
       delay(50);
       logMessage("[MODE] Da TAT Wi-Fi nguon -> Che do MANG NOI BO (Dien thoai dung 5G).");
     } else {
       triggerStaConnect();
+      syncDnsServerMode(false);
       configureSoftApDhcp(false);
       logMessage("[MODE] Da BAT Wi-Fi nguon -> Dang ket noi Internet...");
     }
